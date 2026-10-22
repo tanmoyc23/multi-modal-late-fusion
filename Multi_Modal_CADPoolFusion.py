@@ -1,11 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Aug 11 15:44:21 2026
 
-@author: tanmoy
-"""
-# Imports + seeding
 import os
 import io
 import sys
@@ -39,8 +32,6 @@ import matplotlib.pyplot as plt
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# prefer bf16 where supported -- same exponent range as fp32 so no grad scaler
-# needed, and it avoids the fp16 overflow issues on the probabilistic heads
 if torch.cuda.is_available() and getattr(torch.cuda, 'is_bf16_supported', lambda: False)():
     AMP_DTYPE = torch.bfloat16
     USE_GRAD_SCALER = False
@@ -81,7 +72,7 @@ print("=" * 72)
 
 # RUN_MODE: 'train_and_eval' preprocesses/trains/evaluates; 'eval_only' loads
 # best_model.pth and just evaluates the test set.
-RUN_MODE = 'train_and_eval'    # <-- SWITCH THIS
+RUN_MODE = 'train_and_eval'
 
 # diagnostic only -- set to a modality name to force it to "missing" at test
 # time and see if the model actually leans on it. needs MOD_DROP_P>0 for that
@@ -90,7 +81,7 @@ TEST_TIME_ABLATE = None    # None | 'csi' | 'cam' | 'lidar'
 
 # Multi-seed sweep support: USE_CSI / USE_CAMERA / SEED can be overridden via
 # env vars so an external driver can launch this script as a fresh subprocess
-# per (config, seed). Unset env vars -> hardcoded defaults, unchanged.
+# per (config, seed).
 def _env_bool(name, default):
     v = os.environ.get(name)
     return default if v is None else (v == '1')
@@ -108,8 +99,8 @@ USE_ALL_CAMERAS = False     # True -> use all cameras per BS, False -> camera 1 
 # Training
 BATCH_SIZE     = 32
 EPOCHS         = 50
-LR             = 0.001      # base LR (conv / dense path); attention scaled below
-WEIGHT_DECAY   = 1e-2       # decoupled AdamW decay on >=2-D weights only
+LR             = 0.001      
+WEIGHT_DECAY   = 1e-2
 NUM_WORKERS    = 4
 PATIENCE       = 45
 WARMUP_EPOCHS  = 8
@@ -117,13 +108,11 @@ MIN_LR         = 1e-7
 SEED           = _env_int('MM_SEED', 42)
 
 # EMA / augmentation
-EMA_DECAY      = 0.9995    # long horizon + bias correction (Cell 9)
+EMA_DECAY      = 0.9995    
 AUG_PHASE      = True      # train-time global phase rotation  h -> e^{j theta} h
 AUG_NOISE_P    = 0.5       # probability of adding complex AWGN to a training CSI
 AUG_SNR_DB     = (15.0, 35.0)   # SNR range (dB) for the AWGN augmentation
 
-# target is scaled by OFF_SCALE so the L2 norm is already the mean distance
-# error. beta anneals down so SmoothL1 stays sensitive as residuals shrink.
 LOSS_BETA_START = 0.30
 LOSS_BETA_END   = 0.01
 LAMBDA_DIST     = 1.00     # weight of the mean-Euclidean-norm term
@@ -132,14 +121,12 @@ LAMBDA_ANCHOR   = 0.10     # deep supervision on the physics anchor
 
 # DFR-Fusion architecture
 CSI_EMBED_DIM     = 64
-POS_EMBED_DIM     = 96     # BS-position dense embedding (Fourier features)
+POS_EMBED_DIM     = 96     # BS-position dense embedding
 CAM_EMBED_DIM     = 64     # camera dense embedding
 LIDAR_EMBED_DIM   = 128    # LiDAR dense embedding
 FUSION_DIM        = 200    # dense fusion trunk width
 CSI_WIDTH         = 64     # conv width of the CSI trunk
-# the flatten->Linear readouts dominate param count (one weight per
-# channel/position pair). a 1x1 conv bottleneck before the flatten shares
-# weights like the rest of the CNN and cuts width without losing resolution.
+
 CSI_FLATTEN_CH    = 32     # channels feeding the CSI dense-readout flatten
 CAM_REDUCE_CH     = 16     # channels feeding the camera dense-readout flatten
 CSI_BLOCKS        = 2      # residual blocks in the CSI trunk
@@ -158,13 +145,9 @@ USE_DIST_HEAD     = True   # distributional (soft-binned) offset head
 NUM_BINS          = 64     # bins per axis
 BIN_RANGE         = 5.0    # bin span, in units of that axis' own std
 
-# each fusion layer has 3 LayerScale gates on top of refine_scale, so a
-# gradient has to climb through a lot of near-zero gates to matter. kept
-# small enough to be harmless at step 0 but not so tiny it never escapes.
 LS_INIT           = 1e-2
 
-DROPOUT           = 0.05   # this regime is interpolation-limited, not
-                           # overfit-limited, so dropout is kept light
+DROPOUT           = 0.05
 GRAD_CLIP         = 1.0
 
 # per-modality dropout, symmetric across CSI/cam/lidar. an earlier version
@@ -175,23 +158,17 @@ MOD_DROP_P        = {'csi': 0.15, 'cam': 0.15, 'lidar': 0.15}
 # auxiliary per-modality loss: each listed modality gets an extra forced
 # solo-modality pass every batch (reuses the force_drop path), added to the
 # main loss at AUX_LOSS_WEIGHT. standard fix for modality competition
-# (Huang et al., ICML 2022); only adds a training-time term, doesn't touch
-# the separately trained single-modality baseline.
-AUX_LOSS_MODALITIES = ['csi', 'cam']   # [] to disable entirely
+AUX_LOSS_MODALITIES = ['csi', 'cam']   
 AUX_LOSS_WEIGHT      = 0.30
 
-# learned per-sample confidence gate before the trunk (GMU, Arevalo et al.
-# 2017), symmetric between CSI and camera -- both read the same shared
-# context so neither one gets to go first.
+
 USE_CSI_CONFIDENCE_GATE = True
 USE_CAM_CONFIDENCE_GATE = True
 
 TTA_PHASE_K       = 8      # test-time phase rotations averaged (1 = off)
 ARCH_TAG          = 'v5dfr'   # dense-readout / full-metric / refinement tag
 
-# the 6 DeepVerse scenarios from the paper. change SCENARIO_NAME to switch;
-# everything else follows. each entry has its own csi_std so Re/Im stays
-# unit-scale per scenario instead of using one global constant.
+
 SCENARIO_REGISTRY = {
     'Carla-Town01': {
         'folder': 'Carla-Town01', 'total_scenes': 2200,
@@ -239,7 +216,7 @@ SCENARIO_REGISTRY = {
     },
 }
 
-SCENARIO_NAME = 'DT31'    # <-- CHANGE THIS to switch scenarios
+SCENARIO_NAME = 'DT31'
 
 assert SCENARIO_NAME in SCENARIO_REGISTRY, (
     f"Unknown scenario '{SCENARIO_NAME}'. Available: {list(SCENARIO_REGISTRY.keys())}."
@@ -256,14 +233,10 @@ NUM_LIDARS_PER_BS  = _cfg['lidars_per_bs']
 print(f"Scenario: {SCENARIO_NAME}")
 print(f"  {_cfg['notes']}")
 
-# Built from one absolute root so the script behaves the same regardless of
-# launch directory. Edit this one line if the project ever moves.
 PROJECT_ROOT  = Path("/DATA/tanmoy/Documents/deepverse_localization")
 SCENARIO_PATH = str(PROJECT_ROOT / "scenarios" / SCENARIO_FOLDER)
 CONFIG_PATH   = f"{SCENARIO_PATH}/param/config1.m"
 
-# Image resolution: paper Table I specifies 960 x 540 x 3 (W, H, C). Changing
-# these two numbers rebuilds the cache at a new size.
 IMG_H, IMG_W = 540, 960
 IMG_SIZE     = (IMG_H, IMG_W)
 IMG_TAG      = f"{IMG_H}_{IMG_W}"
@@ -273,16 +246,11 @@ NUM_CAMERAS  = NUM_CAMERAS_PER_BS
 
 # CSI dimensions
 NUM_ANT  = 16
-NUM_SUB  = 8   # change this one number to select a different Nc; the actual
-               # subcarrier indices and cache filename derive from it below
+NUM_SUB  = 8
 
-# subcarrier selection, mirrors FC_AE_GPR_Updated_5.py so both codebases see
-# identical frequency samples. DT31 ships with [0:7] (8 narrow bins);
-# 'spread' distributes NUM_SUB bins across the full band instead, applied
-# in memory -- config.m/config1.m are never touched.
-OFDM_TOTAL_SUBCARRIERS = 512            # dv.comm.OFDM.subcarriers (both config files)
-OFDM_BANDWIDTH_HZ      = 0.05e9         # dv.comm.OFDM.bandwidth = 0.05 [GHz]
-SUBCARRIER_MODE        = 'spread'       # 'spread' (paper-equivalent) | 'contiguous'
+OFDM_TOTAL_SUBCARRIERS = 512            
+OFDM_BANDWIDTH_HZ      = 0.05e9         
+SUBCARRIER_MODE        = 'spread'       
 if SUBCARRIER_MODE == 'spread':
     _sub_stride = OFDM_TOTAL_SUBCARRIERS // NUM_SUB
     SELECTED_SUBCARRIERS = [i * _sub_stride for i in range(NUM_SUB)]
@@ -294,29 +262,23 @@ SUB_TAG = f"sub{NUM_SUB}{'s' if SUBCARRIER_MODE == 'spread' else 'c'}"
 
 # antenna array geometry -- must match dv.comm.bs_antenna.shape in config.m.
 #   (16, 1) = ULA, (4, 4) = UPA (paper Table I: "16 (4 x 4)")
-# ANT_TAG goes in every CSI filename so switching this can't silently reuse
-# stats from the other array shape.
+# antenna pattern to be changed here for comparison with FCAEGPR and contrastive learing
+# perfromance check
 ANT_SHAPE = (4, 4)
 ANT_TAG   = f"ant{ANT_SHAPE[0]}_{ANT_SHAPE[1]}"
 assert ANT_SHAPE[0] * ANT_SHAPE[1] == NUM_ANT, "ANT_SHAPE must multiply to NUM_ANT"
 
 # ULA-vs-UPA switch. IS_UPA is True only for a genuine 2D grid (both dims >
 # 1); switching back to (16,1) is a no-op on the rest of the pipeline.
-#
-# ANT_ORDER says how the flat antenna axis maps onto the physical (row,
-# col) grid: 'dim0_outer' (default) = row*cols+col, standard C-order;
-# 'dim1_outer' = transposed. this is an assumption since DeepVerse's own
-# indexing isn't inspectable -- diagnose_antenna_ordering() checks it
-# against real CSI. doesn't matter for the paper's square (4,4) array,
-# only for a non-square UPA.
-ANT_ORDER = 'dim0_outer'      # <-- flip to 'dim1_outer' if diagnose_antenna_ordering() says so
+
+ANT_ORDER = 'dim0_outer'
 IS_UPA    = (ANT_SHAPE[0] > 1 and ANT_SHAPE[1] > 1)
 if ANT_ORDER == 'dim0_outer':
-    ANT_ROWS, ANT_COLS = ANT_SHAPE[0], ANT_SHAPE[1]     # rows = slow axis, cols = fast axis
+    ANT_ROWS, ANT_COLS = ANT_SHAPE[0], ANT_SHAPE[1]
 else:
     ANT_ROWS, ANT_COLS = ANT_SHAPE[1], ANT_SHAPE[0]
 
-CSI_STD = float(_cfg['csi_std'])   # per-scenario scale; re-measure if ANT_SHAPE changes
+CSI_STD = float(_cfg['csi_std'])   
 
 # 12 CSI channels for a ULA, 14 for a UPA (extra 2 replace the single
 # antenna-differential pair). all bounded cos/sin/standardized, computed at
@@ -343,12 +305,10 @@ print(f"  CSI_STD (per-scenario) = {CSI_STD:.6e}")
 print(f"  CSI_FEAT_CH            = {CSI_FEAT_CH}  "
       f"(v6: {'UPA 2D row/col differential phase' if IS_UPA else 'ULA 1D differential phase (unchanged from v5)'})")
 
-# PhysicsAnchor stats: 12 for ULA (one angle coord + spread), 14 for UPA
-# (split into azimuth/elevation). see PhysicsAnchor, Cell 8.
 NUM_ANCHOR_STATS = 14 if IS_UPA else 12
 
 # Model output
-OUT_DIM = 3              # predict (x, y, z); set to 2 for 2D
+OUT_DIM = 3
 
 # Data split
 TRAIN_RATIO = 0.70
@@ -360,11 +320,6 @@ VAL_RATIO   = 0.15
 #              the FUSION_DIM trunk.
 # 'late'    -- CSI-only and camera-only trained separately first, then
 #              frozen and combined by CADPool below.
-#
-# on DT31 joint feature fusion (0.0750 m) was actually worse than
-# camera-only alone (0.0720 m), while an oracle picking the better of the
-# two per sample reaches 0.0641 m -- classic modality competition. freezing
-# the encoders removes it; only the fusion path changes.
 FUSION_MODE = 'late'          # 'late' | 'feature'
 
 # CADPool (Conflict-Aware Distributional Pooling) hyperparameters
@@ -390,17 +345,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _SC = SCENARIO_FOLDER.lower().replace('-', '_')
 
-# Filename encodes resolution, array shape and subcarrier config, so any
-# change produces a new file instead of silently reusing stale data.
 HDF5_FILE     = CACHE_DIR / f"{_SC}_img{IMG_TAG}_lid{LIDAR_POINTS}_{ANT_TAG}_{SUB_TAG}_u8.h5"
 PROGRESS_FILE = CACHE_DIR / f"{_SC}_img{IMG_TAG}_{ANT_TAG}_{SUB_TAG}_progress.json"
 
-# Produced only by scanning DeepVerse -- cannot be regenerated without it,
-# never delete.
 VALID_SAMPLES_FILE = CACHE_DIR / f"{_SC}_valid_samples.json"
 
-# The original 64x64 cache -- images unusable but CSI/LiDAR still valid, so
-# the builder harvests those instead of calling DeepVerse again.
 LEGACY_H5 = CACHE_DIR / f"{_SC}_img64_lid{LIDAR_POINTS}_nozip.h5"
 
 print(f"  CACHE_DIR      = {CACHE_DIR}")
@@ -419,12 +368,6 @@ if USE_CAMERA and NUM_CAMERAS_PER_BS == 0:
     USE_CAMERA = False
 
 
-# ---------------------------------------------------------------------------
-# Experiment naming and results directory
-# ---------------------------------------------------------------------------
-# Resultsandweights/<scenario>__<modalities>__<hparams>/ -- any change to
-# hparams/modalities gets its own dir, nothing overwrites. ARCH_TAG keeps
-# this version's runs from colliding with older ones.
 def _hp_tag() -> str:
     """Hyperparameter half of the experiment folder name.
 
@@ -443,9 +386,6 @@ def _hp_tag() -> str:
 
 
 def _csi_mod_tag() -> str:
-    # SUB_TAG folded in here (not hp_tag) so two runs at the same antenna
-    # shape but different NUM_SUB don't collide and overwrite each other's
-    # best_model.pth; camera-only runs are untouched by this.
     return f"csi-{ANT_TAG}-{SUB_TAG}"
 
 
@@ -453,15 +393,12 @@ def _cam_mod_tag() -> str:
     return f"cam{NUM_CAMERAS}" if USE_ALL_CAMERAS else "cam1"
 
 
-# True only for actual two-modality late fusion -- a single-modality run
-# must be untouched by FUSION_MODE since it IS one of the base models late
-# fusion consumes.
 IS_LATE_FUSION = (FUSION_MODE == 'late') and USE_CSI and USE_CAMERA
 
 
 def get_experiment_name() -> str:
     mod = []
-    if USE_CSI:    mod.append(_csi_mod_tag())    # geometry-tagged so ULA/UPA never share a folder
+    if USE_CSI:    mod.append(_csi_mod_tag())    
     if USE_BS_POS: mod.append("bspos")
     if USE_CAMERA:
         mod.append(_cam_mod_tag())
@@ -469,8 +406,6 @@ def get_experiment_name() -> str:
     if not mod:    mod.append("none")
     mod_tag = "_".join(mod)
     hp_tag = _hp_tag()
-    # late fusion gets its own folder so it never collides with a
-    # feature-fusion run at identical hyperparameters
     if IS_LATE_FUSION:
         hp_tag += "_late"
     return f"{SCENARIO_NAME}__{mod_tag}__{hp_tag}"
@@ -661,24 +596,6 @@ print(f"  Valid samples    : {VALID_SAMPLES_FILE}")
 print(f"  OUTPUT_DIR       : {OUTPUT_DIR}")
 print("=" * 72)
 
-
-# ---------------------------------------------------------------------------
-# Unified cache builder (CSI + camera + LiDAR, one place)
-# ---------------------------------------------------------------------------
-# dt31_valid_samples.json is the source of truth -- row i of every HDF5
-# dataset maps to samples['samples'][i] = (scene, bs, ue):
-#   CSI   = dv_dataset.get_sample('comm-ue', scene, bs, ue)
-#   image = RGB_images/unit{bs+1}_cam{c}/{scene}.png
-#   lidar = lidar/unit{bs+1}_lidar1/{scene}.pcd
-#   GPS   = valid_samples['ue_positions'][f"{scene}_{ue}"]
-# same index for every modality, so they're automatically position-aligned.
-#
-# each modality is checked/rebuilt independently: valid already -> skip;
-# reusable from another cache file in CACHE_DIR -> harvest it; otherwise
-# rebuild from the original source (PNGs / DeepVerse / PCD files). the
-# three ENSURE_*/FORCE_REBUILD_* switches below control one modality each.
-# every failure raises rather than silently writing zeros.
-
 ENSURE_CSI    = True     # guarantee a valid 'csi' dataset in HDF5_FILE
 ENSURE_IMAGES = True     # guarantee a valid 'images' dataset in HDF5_FILE
 ENSURE_LIDAR  = True     # guarantee a valid 'lidar' dataset in HDF5_FILE
@@ -688,7 +605,7 @@ FORCE_REBUILD_IMAGES = False   # True -> ignore any valid/harvestable images, re
 FORCE_REBUILD_LIDAR  = False   # True -> ignore any valid/harvestable lidar, re-parse PCDs
 FORCE_FULL_REBUILD   = False   # convenience: True forces all three above
 
-IMG_EXTS     = ('.png', '.jpg', '.jpeg')   # DT31 ships .png
+IMG_EXTS     = ('.png', '.jpg', '.jpeg')   
 SCENE_OFFSET = 0                            # DT31 frames are named 0.png .. 7011.png
 
 
@@ -706,14 +623,11 @@ def _find_frame(bs_unit, cam_id, scene):
 
 def _load_frame(p):
     """PNG/JPG on disk -> (3, IMG_H, IMG_W) uint8. Normalization happens at
-    __getitem__ time (Cell 6), not here."""
+    __getitem__ time, not here."""
     img = Image.open(p).convert('RGB').resize((IMG_W, IMG_H), Image.BILINEAR)
     return np.asarray(img, dtype=np.uint8).transpose(2, 0, 1)
 
 
-# pure-python PCD reader since open3d has no installable wheel here. handles
-# 'ascii'/'binary' DATA sections (covers DT31's actual format), not
-# 'binary_compressed'.
 def _read_pcd_xyz(path):
     with open(path, 'rb') as fb:
         header = {}
@@ -1189,27 +1103,17 @@ build_multimodal_cache_if_needed()
 #    log-domain stats over the clean set only.
 # 3. derive one isotropic target scale, OFF_SCALE, from OFF_STD.
 #
-# why OFF_SCALE: normalizing per-axis would weight a low-spread axis (e.g.
+# OFF_SCALE: normalizing per-axis would weight a low-spread axis (e.g.
 # z) far more heavily in the loss than it counts in the reported 3D metric
 # -- a 1 m z error could cost ~40x what a 1 m x error does. scaling all axes
 # by one scalar (OFF_SCALE = sqrt(mean(OFF_STD^2))) makes the loss term
 # exactly the reported mean distance error. OFF_STD is still kept for
-# comparability and for the distributional head's bin grid (Cell 8).
-#
-# position stats don't depend on antenna geometry so they're shared across
-# ANT_SHAPE values; csi_logstats does, so its filename carries ANT_TAG/SUB_TAG.
+# comparability and for the distributional head's bin grid
+
 CLEAN_INDICES_FILE = CACHE_DIR / f"{_SC}_clean_indices.json"
-# "_trainonly" in these filenames: used to be computed over train+val+test
-# combined, which leaked val/test distribution into the normalization
-# stats. renamed instead of reusing the old name so a stale leaked cache
-# can't get silently reloaded.
 GPS_STATS_FILE     = CACHE_DIR / f"{_SC}_gps_stats_trainonly.json"
 OFFSET_STATS_FILE  = CACHE_DIR / f"{_SC}_offset_stats_trainonly.json"
 CSI_LOGSTATS_FILE  = CACHE_DIR / f"{_SC}_csi_logstats_{ANT_TAG}_{SUB_TAG}_trainonly.json"
-# SUB_TAG is included (not just ANT_TAG) so a subcarrier-count change gets
-# its own fresh file instead of silently reusing log-magnitude/phase stats
-# fit on a different NUM_SUB's CSI.
-
 
 def build_clean_indices():
     """Sorted list of indices into `valid_samples` whose UE-position and
@@ -1289,9 +1193,6 @@ def build_scene_block_split(clean_idx, valid_samples_json, train_ratio, val_rati
     with open(valid_samples_json) as f:
         vdata = json.load(f)
     samples = vdata['samples']   # each entry: [scene, bs, ue]
-
-    # sorted explicitly (not just relying on JSON order) so this also works
-    # for multi-BS/multi-UE scenarios where clean_idx isn't pre-ordered
     ordered = sorted(clean_idx, key=lambda i: tuple(samples[i]))
 
     n_clean = len(ordered)
@@ -1390,7 +1291,7 @@ def compute_or_load_offset_stats(clean_idx):
 
 
 def compute_or_load_csi_log_stats(clean_idx, max_samples=50000):
-    """Mean/std of (a) log10(|h|/CSI_STD + 1e-6) over all (ant, sub) cells
+    """Mean/std of (a) log10(|h|/CSI_STD + 1e-6) over all (ant, sub)
     and (b) log10(|FFT2(h/CSI_STD)| + 1e-6) over all angle-delay bins,
     estimated on a random subsample of the clean set. Cached so every run --
     train or eval-only -- standardizes the log-domain channels identically.
@@ -1410,7 +1311,7 @@ def compute_or_load_csi_log_stats(clean_idx, max_samples=50000):
     idx = np.asarray(clean_idx, dtype=np.int64)
     if len(idx) > max_samples:
         idx = rng.choice(idx, size=max_samples, replace=False)
-    idx = np.sort(idx)   # sorted -> sequential-ish HDF5 reads
+    idx = np.sort(idx)
 
     n   = len(idx)
     s1 = s2 = 0.0   # running sums for log|h|
@@ -1419,7 +1320,7 @@ def compute_or_load_csi_log_stats(clean_idx, max_samples=50000):
     t0 = time.time()
     with h5py.File(HDF5_FILE, 'r') as f:
         dset = f['csi']
-        CH = 4096                                  # read in chunks of 4096 samples
+        CH = 4096                                  
         for a in range(0, n, CH):
             block = dset[idx[a:a + CH]]            # (B, 2, N_ant, N_sub)
             H = (block[:, 0] + 1j * block[:, 1]) / CSI_STD
@@ -1451,13 +1352,10 @@ def compute_or_load_csi_log_stats(clean_idx, max_samples=50000):
 
 CLEAN_INDICES = build_clean_indices()
 
-# computed here (not in Cell 10) so every normalization stat below is fit on
-# TRAIN_IDX only, never val/test; Cell 10 reuses these as-is.
 TRAIN_IDX, VAL_IDX, TEST_IDX = build_scene_block_split(
     CLEAN_INDICES, VALID_SAMPLES_FILE, TRAIN_RATIO, VAL_RATIO)
 
 GPS_MEAN, GPS_STD = compute_or_load_gps_stats(TRAIN_IDX)
-# physical range too, used for clipping unbounded predictions later
 with open(GPS_STATS_FILE) as f:
     _s = json.load(f)
 GPS_MIN = np.asarray(_s['min'], dtype=np.float32)
@@ -1467,16 +1365,11 @@ OFF_MEAN, OFF_STD = compute_or_load_offset_stats(TRAIN_IDX)
 LOGMAG_MEAN, LOGMAG_STD, FFTLOG_MEAN, FFTLOG_STD = \
     compute_or_load_csi_log_stats(TRAIN_IDX)
 
-# isotropic target scale + per-axis bin scale for the distributional head,
-# both derived from OFF_STD -- nothing new read from or written to disk.
 OFF_SCALE = float(np.sqrt(np.mean(np.asarray(OFF_STD, dtype=np.float64) ** 2)))
 if not np.isfinite(OFF_SCALE) or OFF_SCALE < 1e-6:
     OFF_SCALE = 1.0
     print("[!]  Degenerate OFF_STD -- falling back to OFF_SCALE = 1.0 m")
 
-# per-axis bin scale (Cell 8): each axis gets its own +-BIN_RANGE*std grid
-# so a near-constant axis (e.g. z) isn't forced onto the wide x/y grid.
-# floored so a degenerate axis can't collapse the grid to zero width.
 AXIS_SCALE = np.maximum(
     np.asarray(OFF_STD, dtype=np.float64) / OFF_SCALE, 0.05).astype(np.float32)
 
@@ -1497,7 +1390,7 @@ print(f"  Clean samples: {len(CLEAN_INDICES):,}")
 # Dataset class
 # ---------------------------------------------------------------------------
 # HDF5 cache format is untouched (raw Re/Im CSI, images, LiDAR); everything
-# here is computed on the fly, so an older cache still works.
+# here is computed on the fly, so an older cache still work.
 #
 # CSI features: 12 channels (ULA) / 14 (UPA). beyond raw Re/Im + log-mag:
 #   ch 6-7   cos/sin of angle(A), A = FFT2(h) -- beamspace phase, gives the
@@ -1517,7 +1410,7 @@ print(f"  Clean samples: {len(CLEAN_INDICES):,}")
 # CSI_FEAT_CH is 14 for UPA / 12 for ULA; the ULA branch is unchanged, so
 # switching back to (16,1) reproduces the original numbers.
 #
-# target = (UE - BS - OFF_MEAN) / OFF_SCALE, a scalar scale (Cell 5), so
+# target = (UE - BS - OFF_MEAN) / OFF_SCALE, a scalar scale, so
 # Euclidean distance in target space is metres on every axis equally. also
 # keeps BS-relative target, train-time phase rotation and complex AWGN aug.
 
@@ -1541,7 +1434,7 @@ class MultimodalGPSDataset(Dataset):
       - ue_raw  : (3,)  raw UE coordinates in metres (for metrics)
 
     The constructor requires every index in `indices` to have both a valid
-    UE-position and BS-position entry in the JSON -- enforced by Cell 5's
+    UE-position and BS-position entry in the JSON
     clean-index filter; re-asserted here as defence-in-depth so the dataset
     never silently fabricates a (0,0,0) ground truth.
     """
@@ -1586,8 +1479,7 @@ class MultimodalGPSDataset(Dataset):
         self.aug_noise_p        = aug_noise_p
         self.aug_snr_db         = aug_snr_db
         self.h5file             = None
-        # ULA-vs-UPA switch for _csi_features(); defaults to the global
-        # config (Cell 2) so existing call sites need no change
+        
         self.is_upa  = IS_UPA  if is_upa  is None else is_upa
         self.ant_rows = ANT_ROWS if ant_rows is None else ant_rows
         self.ant_cols = ANT_COLS if ant_cols is None else ant_cols
@@ -1601,14 +1493,13 @@ class MultimodalGPSDataset(Dataset):
         self.bs_positions  = vdata['bs_positions']
         self.ue_positions  = vdata['ue_positions']
 
-        # defence-in-depth: verify every index resolves to a real UE+BS position
         for i in indices:
             s, b, u = self.valid_samples[i]
             if f"{s}_{u}" not in self.ue_positions:
                 raise KeyError(
                     f"Sample index {i} -> (scene={s}, bs={b}, ue={u}) is missing "
                     f"a UE position in {valid_samples_json}. Did you forget to "
-                    f"pass clean indices from Cell 5?"
+                    f"pass clean indices"
                 )
             if f"{s}_{b}" not in self.bs_positions:
                 raise KeyError(
@@ -1633,13 +1524,10 @@ class MultimodalGPSDataset(Dataset):
         H = (csi_raw[0] + 1j * csi_raw[1]).astype(np.complex64)
 
         if self.augment:
-            # global phase rotation h -> e^{j theta} h: a carrier-phase
-            # nuisance that |h|, |A|, UE position and both differential-phase
-            # channel pairs are invariant to
+           
             if self.aug_phase:
                 theta = np.random.uniform(0.0, 2.0 * np.pi)
                 H = H * np.exp(1j * theta).astype(np.complex64)
-            # complex AWGN at a random SNR relative to this sample's power
             if self.aug_noise_p > 0 and np.random.rand() < self.aug_noise_p:
                 p_sig = float(np.mean(np.abs(H) ** 2))
                 if p_sig > 0:
@@ -1665,19 +1553,13 @@ class MultimodalGPSDataset(Dataset):
         cos_aph = np.cos(a_ph)                                          # ch 6
         sin_aph = np.sin(a_ph)                                          # ch 7
 
-        # subcarrier-differential phase (delay/range cue); edge-replicated
-        # to keep the (N_ant, N_sub) grid shape
         d_sub = Hs[:, 1:] * np.conj(Hs[:, :-1])
         d_sub = np.concatenate([d_sub, d_sub[:, -1:]], axis=1)
         p_sub = np.angle(d_sub)
         cos_ds = np.cos(p_sub)                                          # ch 8
         sin_ds = np.sin(p_sub)                                          # ch 9
 
-        # antenna-differential phase (AoA cue)
         if not self.is_upa:
-            # ULA: every antenna index is a genuine physical neighbour of the
-            # next, so a flat 1D diff along axis 0 is exactly the array's
-            # element-spacing phase progression
             d_ant = Hs[1:, :] * np.conj(Hs[:-1, :])
             d_ant = np.concatenate([d_ant, d_ant[-1:, :]], axis=0)
             p_ant = np.angle(d_ant)
@@ -1689,11 +1571,6 @@ class MultimodalGPSDataset(Dataset):
                 cos_aph, sin_aph, cos_ds,  sin_ds,  cos_da,  sin_da,
             ], axis=0).astype(np.float32)                  # (12, N_ant, N_sub)
         else:
-            # UPA: flat N_ant axis is a row-major flatten of (rows, cols)
-            # (ANT_ORDER='dim0_outer': flat_idx = row*cols + col). reshape
-            # before differencing so no diff crosses a row/col boundary:
-            #   column diff (fast axis) -> azimuth
-            #   row diff    (slow axis) -> elevation
             R, C = self.ant_rows, self.ant_cols
             Hg = Hs.reshape(R, C, Hs.shape[1])                          # (R, C, N_sub)
 
@@ -1722,18 +1599,13 @@ class MultimodalGPSDataset(Dataset):
         i = self.indices[idx]
         scene, bs, ue = self.valid_samples[i]
 
-        # ground-truth UE/BS position -- hard lookup, no zero fallback,
-        # guaranteed valid by the Cell 5 / __init__ check
         ue_raw     = np.asarray(self.ue_positions[f"{scene}_{ue}"], dtype=np.float32)
         bs_pos_raw = np.asarray(self.bs_positions[f"{scene}_{bs}"], dtype=np.float32)
 
-        # isotropically-scaled BS-relative offset target
         off_norm = ((ue_raw - bs_pos_raw) - self.off_mean) / self.off_scale
 
         features = {}
 
-        # CSI input: engineered representation, CSI_FEAT_CH channels (12 ULA
-        # / 14 UPA -- see Cell 2 / above)
         if self.use_csi:
             csi = self.h5file['csi'][i]                       # (2, N_ant, N_sub) raw
             features['csi_feat'] = torch.from_numpy(self._csi_features(csi))
@@ -1771,9 +1643,6 @@ def collate_fn(batch):
     return targets, features, ue_raw
 
 
-# self-check: the diff-phase channel pairs must be phase-rotation invariant,
-# and the rotating pairs must rotate by exactly theta -- Cell 9's TTA relies
-# on both. runs once, fails loudly if the feature layout ever drifts.
 def _verify_csi_feature_invariances(tol=1e-4):
     rng = np.random.RandomState(0)
     raw = rng.randn(2, NUM_ANT, NUM_SUB).astype(np.float32) * CSI_STD
@@ -1782,8 +1651,6 @@ def _verify_csi_feature_invariances(tol=1e-4):
     probe.csi_std      = CSI_STD
     probe.logmag_mean, probe.logmag_std = LOGMAG_MEAN, LOGMAG_STD
     probe.fftlog_mean, probe.fftlog_std = FFTLOG_MEAN, FFTLOG_STD
-    # __new__ skips __init__, so the geometry attributes _csi_features needs
-    # must be set explicitly here
     probe.is_upa   = IS_UPA
     probe.ant_rows = ANT_ROWS
     probe.ant_cols = ANT_COLS
@@ -1793,9 +1660,6 @@ def _verify_csi_feature_invariances(tol=1e-4):
     Hr = ((raw[0] + 1j * raw[1]) * np.exp(1j * theta)).astype(np.complex64)
     f1 = probe._csi_features(np.stack([Hr.real, Hr.imag], axis=0).astype(np.float32))
 
-    # layout depends on geometry: chs 0-9 same for ULA/UPA; chs 10-11 are
-    # the ULA diff pair or the UPA azimuth pair (UPA also has chs 12-13,
-    # elevation). both invariant to global phase either way.
     invariant_ch = (2, 5, 8, 9, 10, 11) + ((12, 13) if IS_UPA else ())
 
     c, s = math.cos(theta), math.sin(theta)
@@ -1816,7 +1680,7 @@ def _verify_csi_feature_invariances(tol=1e-4):
         f"_csi_features produced {f0.shape[0]} channels, expected CSI_FEAT_CH={CSI_FEAT_CH}"
     if not ok:
         raise RuntimeError("CSI feature invariance self-check FAILED -- "
-                           "phase TTA in Cell 9 would be incorrect.")
+                           "phase TTA would be incorrect.")
     return ok
 
 
@@ -1828,11 +1692,6 @@ print(f"[OK] MultimodalGPSDataset defined "
       f"(v6: {CSI_FEAT_CH}-ch CSI features [{'UPA' if IS_UPA else 'ULA'}], "
       f"isotropic offset target, aug)")
 
-
-# diagnostic, not auto-run: guesses which ANT_ORDER convention matches
-# DeepVerse's real indexing, from cached CSI alone. call manually once the
-# cache exists: diagnose_antenna_ordering(). no-op for the paper's square
-# (4,4) array, only matters for a non-square UPA.
 def diagnose_antenna_ordering(hdf5_path=None, num_samples=500, seed=0):
     """Heuristic sanity check for ANT_ORDER on a non-square UPA.
 
@@ -1897,20 +1756,15 @@ def diagnose_antenna_ordering(hdf5_path=None, num_samples=500, seed=0):
 
 
 # ---------------------------------------------------------------------------
-# Dual-path encoders
+# Encoders
 # ---------------------------------------------------------------------------
-# every encoder emits both a dense embedding (the main, proven path) and a
-# token sequence (consumed only by the zero-init attention refinement
-# branch, Cell 8). an earlier version kept only tokens, pooled through a
-# softmax average -- rank-limited and it regressed accuracy, so the dense
-# readout came back as the load-bearing path with attention just adding to it.
 #
 #   - CSIEncoder   : (12, N_ant, N_sub) -> dense via CoordConv + stride-1
 #                    residual blocks (no pooling) -> Flatten -> Linear x2,
-#                    a full-rank map of every (antenna, subcarrier) cell.
+#                    a full-rank map of every (antenna, subcarrier).
 #                    tokens via 1x1 proj of the same trunk + learned
 #                    positional embedding per bin.
-#   - BSPosEncoder : NeRF-style Fourier features of normalized BS xyz.
+#   - BSPosEncoder : Fourier features of normalized BS xyz.
 #   - CameraEncoder: CNN backbone shared between pooled dense vector and
 #                    spatial tokens (+ camera-ID embedding).
 #   - LidarEncoder : PointNet features -> dense (attn-pool + max-pool) and
@@ -1954,7 +1808,7 @@ class CSIEncoder(nn.Module):
         self.num_ant, self.num_sub = num_ant, num_sub
         self.is_upa = IS_UPA if is_upa is None else is_upa
         if flatten_ch is None:
-            flatten_ch = width     # disables the bottleneck: full backbone width, as before
+            flatten_ch = width
 
         if self.is_upa:
             rows = ANT_ROWS if ant_rows is None else ant_rows
@@ -1981,17 +1835,12 @@ class CSIEncoder(nn.Module):
         )
         self.blocks = nn.Sequential(*[ResBlock2d(width) for _ in range(num_blocks)])
 
-        # dense full-res readout, the primary path. 1x1 conv bottleneck shares
-        # weights across positions (unlike the Linear after it), keeping full
-        # resolution while cutting flatten width from `width` to `flatten_ch`.
         self.bottleneck = nn.Conv2d(width, flatten_ch, 1)
         self.dense = nn.Sequential(
             nn.Flatten(),                                    # flatten_ch * A * S
             nn.Linear(flatten_ch * num_ant * num_sub, hidden), nn.GELU(), nn.Dropout(dropout),
             nn.Linear(hidden, embed_dim),
         )
-        # token readout, consumed by the attention refinement branch --
-        # unaffected by the bottleneck above, still full width/resolution
         self.proj    = nn.Conv2d(width, token_dim, 1)
         self.pos_emb = nn.Parameter(torch.randn(1, num_ant * num_sub, token_dim) * 0.02)
 
@@ -2028,30 +1877,6 @@ class BSPosEncoder(nn.Module):
         ff = self._fourier(bs_pos)
         return self.dense(ff), self.tok(ff).unsqueeze(1)
 
-
-# class CameraEncoder(nn.Module):
-#     """Per-camera 2D-CNN shared by both readouts:
-#     (B, 3, H, W) -> (dense (B, 128), tokens (B, (H/8)*(W/8), token_dim))."""
-#     def __init__(self, token_dim=256, img_size=64):
-#         super().__init__()
-#         self.backbone = nn.Sequential(
-#             nn.Conv2d(3, 32, 3, stride=2, padding=1),   nn.BatchNorm2d(32),  nn.GELU(),
-#             nn.Conv2d(32, 64, 3, stride=2, padding=1),  nn.BatchNorm2d(64),  nn.GELU(),
-#             nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.GELU(),
-#         )
-#         self.pool    = nn.AdaptiveAvgPool2d(1)
-#         self.fc      = nn.Linear(128, 128)
-#         self.proj    = nn.Conv2d(128, token_dim, 1)
-#         n_tok        = (img_size // 8) * (img_size // 8)
-#         self.pos_emb = nn.Parameter(torch.randn(1, n_tok, token_dim) * 0.02)
-
-#     def forward(self, x):
-#         f   = self.backbone(x)                                               # (B,128,8,8)
-#         emb = self.fc(self.pool(f).flatten(1))                               # (B,128)
-#         tok = self.proj(f).flatten(2).permute(0, 2, 1) + self.pos_emb        # (B,64,d)
-#         return emb, tok
-
-
 class CameraEncoder(nn.Module):
     def __init__(self, token_dim=256, img_hw=(540,960), dense_dim=256, reduce_ch=None):
         super().__init__()
@@ -2069,9 +1894,6 @@ class CameraEncoder(nn.Module):
         self.fh, self.fw = int(fh), int(fw)
         print(f"  CameraEncoder: {img_hw} -> {self.fh}x{self.fw} = {self.fh*self.fw} tokens")
         self.pool    = nn.AdaptiveAvgPool2d(1)
-        # bottleneck: same rationale as CSIEncoder's -- 1x1 conv, weight
-        # shared across every spatial position, ahead of the large
-        # flatten -> Linear (see CAM_REDUCE_CH, Cell 2)
         self.reduce  = nn.Conv2d(128, reduce_ch, 1)
         self.spatial = nn.Linear(reduce_ch*self.fh*self.fw, dense_dim)
         self.fc      = nn.Linear(128+dense_dim, dense_dim)
@@ -2086,28 +1908,6 @@ class CameraEncoder(nn.Module):
         emb  = self.fc(torch.cat([gap, spat], dim=1))
         tok  = self.proj(f).flatten(2).permute(0,2,1) + self.pos_emb
         return emb, tok
-
-
-# class MultiCameraEncoder(nn.Module):
-#     """Independent CNN per camera (v2 parity). Dense vectors are concatenated
-#     and linearly fused; tokens are concatenated along the SEQUENCE axis with a
-#     learned camera-ID embedding so the fusion can tell the views apart."""
-#     def __init__(self, num_cameras=4, embed_dim=192, token_dim=256, img_size=64):
-#         super().__init__()
-#         self.num_cameras = num_cameras
-#         self.encoders = nn.ModuleList(
-#             [CameraEncoder(token_dim, img_size) for _ in range(num_cameras)])
-#         self.fusion = nn.Linear(128 * num_cameras, embed_dim)
-#         self.cam_id = nn.Parameter(torch.randn(num_cameras, 1, token_dim) * 0.02)
-
-#     def forward(self, images):
-#         embs, toks = [], []
-#         for i, enc in enumerate(self.encoders):
-#             e, t = enc(images[:, i])
-#             embs.append(e)
-#             toks.append(t + self.cam_id[i].to(t.dtype))
-#         return self.fusion(torch.cat(embs, dim=1)), torch.cat(toks, dim=1)
-
 
 class MultiCameraEncoder(nn.Module):
     def __init__(self, num_cameras=4, embed_dim=192, token_dim=256, img_hw=(540,960),
@@ -2125,19 +1925,6 @@ class MultiCameraEncoder(nn.Module):
         for i, enc in enumerate(self.encoders):
             e, t = enc(images[:, i]); embs.append(e); toks.append(t + self.cam_id[i].to(t.dtype))
         return self.fusion(torch.cat(embs, dim=1)), torch.cat(toks, dim=1)
-
-
-# class SingleCameraEncoder(nn.Module):
-#     """Single-view wrapper around CameraEncoder."""
-#     def __init__(self, embed_dim=192, token_dim=256, img_size=64):
-#         super().__init__()
-#         self.encoder = CameraEncoder(token_dim, img_size)
-#         self.fusion  = nn.Linear(128, embed_dim)
-
-#     def forward(self, images):
-#         e, t = self.encoder(images[:, 0])
-#         return self.fusion(e), t
-
 
 class SingleCameraEncoder(nn.Module):
     def __init__(self, embed_dim=192, token_dim=256, img_hw=(540,960), reduce_ch=None):
@@ -2189,8 +1976,6 @@ class LidarEncoder(nn.Module):
     def forward(self, points):
         B, N, _ = points.shape
         valid = (points.abs().sum(-1) > 1e-6)                                # (B,N)
-        # a fully-padded cloud (missing .pcd) must keep >= 1 valid key, or
-        # the masked softmax produces NaN
         no_valid = ~valid.any(dim=1)
         if no_valid.any():
             valid = valid.clone()
@@ -2198,7 +1983,6 @@ class LidarEncoder(nn.Module):
 
         pf = self.point_mlp(points)                                          # (B,N,256)
 
-        # dense: masked attention pooling + masked max pooling
         scores = self.attention_mlp(pf).squeeze(-1)                          # (B,N)
         scores = scores.masked_fill(~valid, float('-inf'))
         w = torch.nan_to_num(F.softmax(scores, dim=-1), nan=0.0).unsqueeze(-1)
@@ -2207,7 +1991,6 @@ class LidarEncoder(nn.Module):
         max_feat = torch.nan_to_num(pf_m.max(1)[0], nan=0.0, neginf=0.0)
         emb = self.output_mlp(torch.cat([attn_feat, max_feat], -1))          # (B,embed_dim)
 
-        # tokens: PMA over the valid points
         kv = self.to_tok(pf)                                                 # (B,N,d)
         q  = self.seeds.expand(B, -1, -1).to(kv.dtype)
         out, _ = self.pma(q, kv, kv, key_padding_mask=~valid)
@@ -2218,41 +2001,6 @@ class LidarEncoder(nn.Module):
 
 print("[OK] Dual-path encoders defined "
       "(v5: dense full-resolution CSI readout restored + token sequences)")
-
-
-# ---------------------------------------------------------------------------
-# GPSLocalizer -- DFR-Fusion
-# ---------------------------------------------------------------------------
-# four mechanisms, built as a strict superset: at init this model is exactly
-# plain dense-concat fusion, and every new piece attaches through a
-# zero-init gate, so it can't start worse and only grows in as it earns
-# gradient.
-#
-# (1) DENSE TRUNK (load-bearing): per-modality embeddings, LayerNorm'd,
-#     concatenated, 2-layer GELU MLP of width FUSION_DIM. carries the
-#     prediction at step 0.
-#
-# (2) PhysicsAnchor -- beamspace peak reader. standardized angle-delay map,
-#     temperature soft-argmax (beta init 4, clamped), 12/14 stats (argmax
-#     position/spread per axis, peak mass, negentropy, power summaries).
-#     a zero-init MLP turns them into a coarse offset prior Delta0, fed to
-#     the trunk as a feature and supervised separately as an aux head --
-#     doesn't fight the trunk's own init.
-#
-# (3) ATTENTION REFINEMENT (zero-init residual): K latent tokens, FiLM-
-#     conditioned on [stats; Delta0], run L gated fusion layers (residual
-#     cross-attn per modality scaled by a per-sample gate, then self-attn +
-#     FFN). latents concatenated, projected, added to the trunk through a
-#     zero-init LayerScale.
-#
-# (4) DISTRIBUTIONAL HEAD: NUM_BINS-way distribution per axis, prediction =
-#     expectation + zero-init residual. handles the multimodal/NLOS case a
-#     bare linear head would average into one wrong point. trained with the
-#     DFL loss from Cell 9 alongside the main regression loss.
-#
-# NUM_ANCHOR_STATS is set once in Cell 2 so every consumer stays in sync
-# when ANT_SHAPE changes.
-
 
 class PhysicsAnchor(nn.Module):
     """Differentiable beamspace peak reader -> NUM_ANCHOR_STATS statistics
@@ -2267,11 +2015,7 @@ class PhysicsAnchor(nn.Module):
                  is_upa=None, ant_rows=None, ant_cols=None):
         super().__init__()
         self.n_bins = num_ant * num_sub
-        # geometry defaults to the global config (Cell 2) but stays overridable
         self.is_upa = IS_UPA if is_upa is None else is_upa
-        # resolved from this instance's own geometry, not the global
-        # NUM_ANCHOR_STATS, so an explicit is_upa override can never desync
-        # anchor_mlp's input width from what forward() actually produces
         self.num_anchor_stats = 14 if self.is_upa else 12
 
         if self.is_upa:
@@ -2279,9 +2023,6 @@ class PhysicsAnchor(nn.Module):
             cols = ANT_COLS if ant_cols is None else ant_cols
             assert rows * cols == num_ant, \
                 f"ant_rows*ant_cols ({rows}*{cols}) must equal num_ant ({num_ant})"
-            # flat antenna idx -> (row, col) under ANT_ORDER='dim0_outer':
-            # idx = row*cols + col -- must match _csi_features's convention
-            # (Cell 6) so the diff-phase channels and this grid agree
             idx = torch.arange(num_ant)
             row_of_idx = idx // cols
             col_of_idx = idx % cols
@@ -2303,8 +2044,6 @@ class PhysicsAnchor(nn.Module):
             nn.Linear(hidden, hidden), nn.GELU(),
             nn.Linear(hidden, out_dim),
         )
-        # zero-init the output layer: Delta0 == 0 at step 0, so the anchor
-        # injects no random offset and only grows as its supervision bites
         nn.init.zeros_(self.anchor_mlp[-1].weight)
         nn.init.zeros_(self.anchor_mlp[-1].bias)
 
@@ -2315,7 +2054,6 @@ class PhysicsAnchor(nn.Module):
             fftlog = f[:, 5].flatten(1)                                      # (B, n_bins)
             logmag = f[:, 2].flatten(1)
 
-            # per-sample standardization
             fmean = fftlog.mean(dim=1, keepdim=True)
             fstd  = fftlog.std(dim=1, keepdim=True).clamp_min(1e-6)
             q = (fftlog - fmean) / fstd
@@ -2412,14 +2150,7 @@ class FusionLayer(nn.Module):
 
 
 class GPSLocalizer(nn.Module):
-    """DFR-Fusion. Predicts the isotropically-scaled BS-relative offset.
-    The absolute position is reconstructed outside the model as
-
-        UE = BS + (pred * OFF_SCALE + OFF_MEAN).
-
-    forward() returns (pred, anchor_pred, bin_logits, gate_diagnostics),
-    where anchor_pred / bin_logits are None when that mechanism is off.
-    """
+    
     def __init__(self, *,
                  use_csi=True, use_bs_pos=True, use_camera=False, use_lidar=False,
                  use_all_cameras=False, num_cameras=4,
@@ -2442,9 +2173,6 @@ class GPSLocalizer(nn.Module):
         self.use_dist_head   = use_dist_head
         self.out_dim    = out_dim
         self.num_bins   = num_bins
-        # mod_drop_p accepts a single float (applied to every modality) or a
-        # per-modality dict -- normalized to a dict so the rest of the class
-        # just looks up self.mod_drop_p[m]
         if isinstance(mod_drop_p, dict):
             self.mod_drop_p = dict(mod_drop_p)
         else:
@@ -2468,9 +2196,6 @@ class GPSLocalizer(nn.Module):
             self.anchor   = PhysicsAnchor(num_ant, num_sub, out_dim=out_dim,
                                           is_upa=self.is_upa, ant_rows=self.ant_rows,
                                           ant_cols=self.ant_cols)
-            # read the stat count back off the anchor just built, not the
-            # global NUM_ANCHOR_STATS, so fusion_in/film conditioning can
-            # never desync from an explicit is_upa override
             self.num_anchor_stats = self.anchor.num_anchor_stats
             fusion_in += csi_embed_dim + self.num_anchor_stats + out_dim
             mods.append('csi')
@@ -2498,9 +2223,6 @@ class GPSLocalizer(nn.Module):
         assert len(mods) > 0, "Enable at least one modality!"
         self.mod_names = mods
 
-        # learned "sensor absent" embeddings so a dropped modality is
-        # explicit, not a silent zero shifting the trunk's input
-        # distribution. only created when that modality's drop prob > 0.
         miss = {}
         if use_csi and self.mod_drop_p.get('csi', 0.0) > 0:
             miss['csi']   = nn.Parameter(torch.zeros(csi_embed_dim))
@@ -2510,37 +2232,23 @@ class GPSLocalizer(nn.Module):
             miss['lidar'] = nn.Parameter(torch.zeros(lidar_embed_dim))
         self.missing_emb = nn.ParameterDict(miss)
 
-        # learned per-sample confidence gate on CSI's dense embedding, before
-        # the trunk (GMU design, Arevalo et al. 2017): linear+sigmoid over
-        # both modalities' embeddings, so it can express "given the camera,
-        # how much should CSI count here." distinct from rel_gate in
-        # FusionLayer, which only touches the small attention correction --
-        # this one acts on what the trunk actually sees.
-        #
-        # init: zeros_ weight, bias=1.0 -> sigmoid(1)=0.731, so CSI starts
-        # at ~73% strength everywhere and moves per sample from training.
         self.use_csi_gate = use_csi and use_camera and use_csi_confidence_gate
         if self.use_csi_gate:
             self.csi_conf_gate = nn.Linear(csi_embed_dim + cam_embed_dim, 1)
             nn.init.zeros_(self.csi_conf_gate.weight)
             nn.init.constant_(self.csi_conf_gate.bias, 1.0)
 
-        # mirror of csi_conf_gate above, same construction and init
-        # convention, same [csi;cam] joint context -- "given what CSI shows,
-        # how much should camera be trusted here."
         self.use_cam_gate = use_csi and use_camera and use_cam_confidence_gate
         if self.use_cam_gate:
             self.cam_conf_gate = nn.Linear(csi_embed_dim + cam_embed_dim, 1)
             nn.init.zeros_(self.cam_conf_gate.weight)
             nn.init.constant_(self.cam_conf_gate.bias, 1.0)
 
-        # (1) dense trunk: the load-bearing path
         self.trunk = nn.Sequential(
             nn.Linear(fusion_in, fusion_dim), nn.GELU(), nn.Dropout(dropout),
             nn.Linear(fusion_dim, fusion_dim), nn.GELU(), nn.Dropout(dropout),
         )
 
-        # (3) attention refinement, added through a zero-init LayerScale
         if use_attn_refine:
             self.fusion_tokens = nn.Parameter(
                 torch.randn(1, num_fusion_tokens, attn_dim) * 0.02)
@@ -2555,20 +2263,14 @@ class GPSLocalizer(nn.Module):
             ])
             self.refine_norm = nn.LayerNorm(attn_dim)
             self.refine_proj = nn.Linear(num_fusion_tokens * attn_dim, fusion_dim)
-            # LayerScale = 0 -> the attention branch contributes nothing at
-            # step 0; the model starts as the pure dense trunk and only
-            # grows the branch if it reduces the loss
             self.refine_scale = nn.Parameter(torch.zeros(fusion_dim))
 
-        # (4) heads
         self.head_reg = nn.Sequential(
             nn.Linear(fusion_dim, 256), nn.GELU(), nn.Dropout(dropout),
             nn.Linear(256, 128), nn.GELU(),
             nn.Linear(128, out_dim),      # no activation -> can predict negatives
         )
         if use_dist_head:
-            # zero-init the continuous residual so the prediction starts as
-            # the (near-zero-mean) distributional expectation
             nn.init.zeros_(self.head_reg[-1].weight)
             nn.init.zeros_(self.head_reg[-1].bias)
             self.head_dist = nn.Sequential(
@@ -2603,21 +2305,8 @@ class GPSLocalizer(nn.Module):
 
     def forward(self, features, force_drop=None, disable_random_dropout=False,
                 return_embedding=False):
-        # return_embedding is opt-in (default False), so every other caller
-        # (training, eval, ablation, FLOP counting) is unaffected. only
-        # LateFusionLocalizer passes True, to recover the penultimate
-        # per-modality embedding this already computes and would discard.
         dense, tokens, anchor_pred, stats = self._encode(features)
 
-        # optional modality dropout, train only -- off by default since no
-        # sensor is ever missing at test time.
-        # force_drop: deterministic, unconditional -- substitutes the listed
-        # modalities with their "missing" embedding every sample. used by
-        # TEST_TIME_ABLATE and AUX_LOSS_MODALITIES.
-        # disable_random_dropout: skips the random-dropout block even in
-        # training mode -- only for the aux-loss pass, so it isolates
-        # exactly the modality asked for via force_drop, with no chance of
-        # a random draw also dropping it on top.
         csi_dropped = False
         cam_dropped = False
         if force_drop:
@@ -2653,14 +2342,7 @@ class GPSLocalizer(nn.Module):
         csi_confidence = None
         cam_confidence = None
         gate_diag = {}
-        # confidence gates, only when the modality is genuinely present --
-        # not applied to a dropped one, since gating a constant is
-        # meaningless and the "missing" substitute already says enough.
-        #
-        # both gates computed from the original, pre-gating embeddings and
-        # only applied after both are computed -- otherwise applying one
-        # gate before computing the other would bias it against an
-        # already-suppressed signal, favoring whichever runs first.
+        
         _joint_ctx = None
         if 'csi' in dense and 'cam' in dense:
             _joint_ctx = torch.cat([dense['csi'], dense['cam']], dim=-1).float()
@@ -2679,37 +2361,21 @@ class GPSLocalizer(nn.Module):
             dense['cam'] = dense['cam'] * cam_confidence
             gate_diag['cam_confidence'] = [cam_confidence]
 
-        # (1) dense trunk
         embs = [dense[m] for m in self.mod_names if m in dense]
         ref_dtype = embs[0].dtype
         if stats is not None:
-            # stats/anchor_pred come from the raw CSI features before the
-            # dropout above runs -- otherwise "dropping CSI" would zero the
-            # dense embedding while the anchor channel kept leaking it anyway.
             stats_for_trunk, anchor_for_trunk = stats, anchor_pred
             if csi_dropped:
                 stats = torch.zeros_like(stats)
                 anchor_pred = torch.zeros_like(anchor_pred)
                 stats_for_trunk, anchor_for_trunk = stats, anchor_pred
             elif csi_confidence is not None:
-                # csi_confidence must also scale the anchor's view into the
-                # trunk, or a suppressed modality still gets a full-strength
-                # backdoor through this channel -- confirmed by the gate
-                # settling at ~0.12 while fusion still trailed camera-only
-                # by about that much.
-                #
-                # only gates the trunk-facing copies (stats_for_trunk/
-                # anchor_for_trunk), not the returned anchor_pred -- the
-                # anchor keeps training on its own accuracy regardless of
-                # gate trust, avoiding a collapse spiral (gate distrusts ->
-                # anchor undertrained -> gate trusts it even less).
                 stats_for_trunk = stats * csi_confidence
                 anchor_for_trunk = anchor_pred * csi_confidence
             embs.append(stats_for_trunk.to(ref_dtype))
             embs.append(anchor_for_trunk.to(ref_dtype))
         h = self.trunk(torch.cat(embs, dim=1))
 
-        # (3) zero-init attention refinement
         if self.use_attn_refine:
             B = h.size(0)
             Z = self.fusion_tokens.expand(B, -1, -1).to(ref_dtype)
@@ -2727,7 +2393,6 @@ class GPSLocalizer(nn.Module):
             z = self.refine_proj(z)                     # not mean-pooled
             h = h + self.refine_scale.to(h.dtype) * z
 
-        # (4) heads
         delta_res = self.head_reg(h)
         bin_logits = None
         if self.use_dist_head:
@@ -2738,9 +2403,6 @@ class GPSLocalizer(nn.Module):
         else:
             pred = delta_res
         if return_embedding:
-            # single-modality model always has exactly one key in dense --
-            # grabbed generically so this still works if a LiDAR-only
-            # expert gets added later
             emb = next(iter(dense.values())) if dense else None
             return pred, anchor_pred, bin_logits, gate_diag, emb
         return pred, anchor_pred, bin_logits, gate_diag
@@ -2753,9 +2415,6 @@ print("[OK] GPSLocalizer defined (v5 DFR: dense trunk + repaired physics anchor 
 # ---------------------------------------------------------------------------
 # CADPool -- Conflict-Aware Distributional Pooling
 # ---------------------------------------------------------------------------
-# the late-fusion combiner. a naive late fusion would average the two
-# experts' point predictions, throwing away that each has a full per-axis
-# distribution over the same bin grid. four ideas instead:
 #
 # 1. pool in distribution space: log-opinion pool, p_fused ~ p_csi^a *
 #    p_cam^b, in log space -- preserves multi-modality instead of averaging
@@ -2769,9 +2428,6 @@ print("[OK] GPSLocalizer defined (v5 DFR: dense trunk + repaired physics anchor 
 # 4. zero-init last layer: at epoch 0 the exponents collapse to the
 #    inverse-variance (Kalman-style) precision weights, so training starts
 #    from the classical closed-form fusion and can only learn departures.
-#
-# exponents/conflict/precision all surface through gate_diag, so they land
-# in training_history.csv and results.txt with no reporting changes needed.
 class CADPool(nn.Module):
     """Conflict-aware distributional pooling of two frozen experts.
 
@@ -2793,9 +2449,6 @@ class CADPool(nn.Module):
         self.corr_scale = float(corr_scale)
         self.register_buffer('bin_centers', bin_centers.clone().float())  # (D,K)
 
-        # compress each expert's penultimate embedding (previously computed
-        # then discarded before reaching the combiner) down to a small width
-        # before joining the per-axis descriptors -- see LATE_EMB_HIDDEN.
         self.emb_compress_csi = nn.Sequential(
             nn.Linear(int(csi_embed_dim), emb_hidden), nn.GELU())
         self.emb_compress_cam = nn.Sequential(
@@ -2836,16 +2489,12 @@ class CADPool(nn.Module):
         scalars per axis is enough to say who's sharper, who's more
         certain, and whether they agree.
         """
-        # Jensen-Shannon divergence per axis: symmetric, bounded, and
-        # (unlike KL) finite even when the two experts have disjoint support.
         pa_c   = p_a.clamp_min(1e-12)
         pb_c   = p_b.clamp_min(1e-12)
         m      = (0.5 * (pa_c + pb_c)).clamp_min(1e-12)
         js     = 0.5 * ((pa_c * (pa_c / m).log()).sum(-1)
                         + (pb_c * (pb_c / m).log()).sum(-1))
         js     = (js / math.log(2.0)).clamp(0.0, 1.0)               # (B,D) in [0,1]
-        # mean gap standardized by combined spread: how far apart are they,
-        # in units of how uncertain they each claim to be
         dmu    = (mu_a - mu_b) / (sd_a.pow(2) + sd_b.pow(2)).clamp_min(1e-8).sqrt()
         desc   = torch.stack([mu_a, mu_b, sd_a, sd_b, ent_a, ent_b,
                               js, dmu, res_a, res_b], dim=-1)       # (B,D,10)
@@ -2857,36 +2506,18 @@ class CADPool(nn.Module):
         logp_a, p_a, mu_a, sd_a, ent_a = self._moments(logits_a)
         logp_b, p_b, mu_b, sd_b, ent_b = self._moments(logits_b)
 
-        # each expert's head is mu + a learned continuous residual; recover
-        # the residual so the pooled prediction keeps the full accuracy of
-        # each expert, not just the discretized bin expectation
         res_a = pred_a.float() - mu_a
         res_b = pred_b.float() - mu_b
 
         desc, js = self._descriptors(mu_a, sd_a, ent_a, res_a,
                                      mu_b, sd_b, ent_b, res_b, p_a, p_b)
         B = desc.size(0)
-        # compress each expert's embedding and append to the descriptor
-        # vector -- global context (one per sample, not per-axis like
-        # `desc`), so concatenated once after the reshape, not broadcast.
         emb_feat_a = self.emb_compress_csi(emb_a.float())   # (B, emb_hidden)
         emb_feat_b = self.emb_compress_cam(emb_b.float())   # (B, emb_hidden)
         net_in = torch.cat([desc.reshape(B, -1), emb_feat_a, emb_feat_b], dim=-1)
         out   = self.net(net_in)                                    # (B, 3D)
         g_a, g_b, corr = out.split(self.out_dim, dim=-1)
 
-        # exp(.) keeps exponents positive; zero-init last layer makes
-        # alpha_a == alpha_b == 1 at the start.
-        #
-        # alpha=1 is the classical choice: for two Gaussian experts the
-        # unit-exponent pool's mean is exactly the inverse-variance (Kalman)
-        # estimate -- Bayes-optimal if the experts were independent. so
-        # epoch 0 reproduces that estimator and training can only depart.
-        #
-        # departing is the point: the experts' errors are actually
-        # correlated (rho ~ +0.49 on DT31), so unit exponents double-count
-        # shared evidence. shrinking toward ~0.5 corrects for it, learned
-        # per sample so it tracks the local correlation.
         prec_a = 1.0 / sd_a.pow(2).clamp_min(1e-8)
         prec_b = 1.0 / sd_b.pow(2).clamp_min(1e-8)
         w_a    = prec_a / (prec_a + prec_b)          # reported, not applied
@@ -2895,9 +2526,6 @@ class CADPool(nn.Module):
         alpha_a = torch.exp(g_a.clamp(-c, c))
         alpha_b = torch.exp(g_b.clamp(-c, c))
 
-        # single-expert fallback (train-time) and test-time ablation,
-        # mirroring GPSLocalizer's force_drop/modality-dropout contract so
-        # TEST_TIME_ABLATE and the rest of the pipeline behave identically
         drop_a = drop_b = False
         if force_drop:
             drop_a = 'csi' in force_drop
@@ -2918,15 +2546,11 @@ class CADPool(nn.Module):
             alpha_b = torch.zeros_like(alpha_b)
             alpha_a = torch.ones_like(alpha_a)
 
-        # the pool
         fused_logits = (alpha_a.unsqueeze(-1) * logp_a
                         + alpha_b.unsqueeze(-1) * logp_b)           # (B,D,K)
         p_f  = torch.softmax(fused_logits, dim=-1)
         mu_f = (p_f * self.bin_centers.unsqueeze(0)).sum(-1)        # (B,D)
 
-        # pool residuals by effective precision (alpha * prec) -- alpha
-        # alone would give a broad, uninformative expert the same say as a
-        # sharp one -- then add the zero-init learned correction.
         eff_a = alpha_a * prec_a
         eff_b = alpha_b * prec_b
         esum  = (eff_a + eff_b).clamp_min(1e-8)
@@ -2947,7 +2571,7 @@ class LateFusionLocalizer(nn.Module):
     Exposes the exact same forward contract --
         (features, force_drop, disable_random_dropout)
             -> (pred, anchor_pred, bin_logits, gate_diag)
-    -- so every downstream cell (training loop, EMA, TTA, evaluate_full,
+    -- so every downstream systen (training loop, EMA, TTA, evaluate_full,
     results.mat/.txt/CDF/curves) works unchanged. The benchmark harness must
     not vary between the two fusion modes, or the A/B comparison it exists
     to support would be meaningless.
@@ -2984,17 +2608,8 @@ class LateFusionLocalizer(nn.Module):
             emb_hidden=emb_hidden,
             hidden=hidden, dropout=dropout, mod_drop_p=mod_drop_p,
             gate_clamp=gate_clamp, corr_scale=corr_scale)
-        # mirrored so downstream code that reads model.bin_centers (the DFL
-        # criterion setup) sees the same grid the pool fuses on
         self.register_buffer('bin_centers', csi_model.bin_centers.detach().clone())
 
-        # compatibility surface: downstream cells introspect these on
-        # GPSLocalizer, so declared here too so TEST_TIME_ABLATE and the
-        # aux-loss validator don't crash on a missing attribute.
-        #
-        # missing_emb is a plain dict here, not learned embeddings --
-        # dropping an expert is exact (its exponent goes to zero, verified
-        # to ~6e-8), no embedding needed.
         self.mod_names   = ['csi', 'cam']
         self.missing_emb = {'csi': True, 'cam': True}
 
@@ -3034,23 +2649,6 @@ print("[OK] CADPool + LateFusionLocalizer defined (v16: conflict-aware "
       "classical estimator; v24: gate also sees each expert's compressed "
       "penultimate embedding, previously computed and discarded)")
 
-
-# ---------------------------------------------------------------------------
-# Scheduler + losses + EMA + TTA + train/eval utilities
-# ---------------------------------------------------------------------------
-# loss, in the isotropic offset space of Cell 5:
-#   L = SmoothL1_beta(pred, target)                 beta annealed 0.30->0.01
-#     + LAMBDA_DIST   * E[ ||pred - target||_2 ]     == mean metres/OFF_SCALE
-#     + LAMBDA_DFL    * DFL(bin_logits, target)      distributional head
-#     + LAMBDA_ANCHOR * (SmoothL1 + LAMBDA_DIST*||.||)(Delta0, target)
-#
-# why anneal beta: with a fixed beta=1.0 a typical 2.5 m residual sits deep
-# in SmoothL1's quadratic region where the gradient is ~4% of its linear
-# value -- most of training would chase a vanishing signal. shrinking beta
-# keeps it behaving like L1 where the error actually lives.
-#
-# Euclidean term weighted 1.0 because with a scalar target scale it's
-# exactly the reported mean distance error -- no reason to down-weight it.
 def get_cosine_warmup_scheduler(optimizer, warmup_epochs, total_epochs,
                                  min_lr=1e-7, base_lr=1e-3):
     def lr_lambda(epoch):
@@ -3197,9 +2795,9 @@ class ModelEMA:
 
 def rotate_csi_features(feat, theta):
     """Apply h -> e^{j theta} h directly on the engineered CSI tensor
-    (CSI_FEAT_CH channels: 12 for a ULA, 14 for a UPA -- see Cell 2/6).
+    (CSI_FEAT_CH channels: 12 for a ULA, 14 for a UPA).
 
-    Exact identity, verified numerically by the self-check in Cell 6:
+    Exact identity, verified numerically by the self-check in:
       * rotate by theta : (Re, Im) = ch(0,1)
                           (cos phi, sin phi) = ch(3,4)
                           (cos angle A, sin angle A) = ch(6,7)
@@ -3416,12 +3014,12 @@ def evaluate_full(model, loader, device, tta_k: int = 1, force_drop=None):
 
     If tta_k > 1 and CSI is an input, the prediction is averaged over tta_k
     global phase rotations of the CSI -- a label-invariant nuisance
-    transform applied exactly in feature space (Cell 6 self-check). Pure
+    transform applied exactly in feature space. Pure
     variance reduction, no feature recomputation, zero leakage.
 
     force_drop: forwarded to model(features, force_drop=...)
     unconditionally on every sample -- see GPSLocalizer.forward(). Used for
-    test-time modality ablation (Cell 15 / TEST_TIME_ABLATE), never during
+    test-time modality ablation (TEST_TIME_ABLATE), never during
     normal evaluation.
 
     This function does not alter tta_k based on force_drop. An earlier
@@ -3471,18 +3069,6 @@ print("[OK] Scheduler + DFR loss + bias-corrected EMA + phase TTA + "
       "param groups + train/eval utilities defined (v5)")
 
 
-# ---------------------------------------------------------------------------
-# Data splits + DataLoaders
-# ---------------------------------------------------------------------------
-# split is computed once in Cell 5 as a scene-contiguous block split (see
-# build_scene_block_split()); this cell just consumes TRAIN/VAL/TEST_IDX, so
-# the stats-fitting split always matches the training split.
-#
-# deliberate break from an older seeded-random-permutation split: that split
-# let >90% of test samples sit one video frame from a training sample
-# (~0.08 m leak on DT31), which is why those runs beat the paper's baseline
-# by 10-100x instead of actually competing with it. not comparable to runs
-# from before this change.
 with h5py.File(HDF5_FILE, 'r') as f:
     num_samples = int(f.attrs['num_samples'])
     print(f"HDF5: {HDF5_FILE}")
@@ -3497,7 +3083,6 @@ n_clean = len(CLEAN_INDICES)
 print(f"\nSplit (scene-contiguous, Option A) -> "
       f"Train {len(train_idx):,} | Val {len(val_idx):,} | Test {len(test_idx):,}")
 
-# persist the split for independent reuse/verification later
 split_file = OUTPUT_DIR / "split_indices.json"
 with open(split_file, 'w') as f:
     json.dump({'train': train_idx, 'val': val_idx, 'test': test_idx,
@@ -3526,8 +3111,6 @@ if NUM_WORKERS > 0:
     dl_kw['persistent_workers'] = True
     dl_kw['prefetch_factor'] = 4
 
-
-# seeded shuffler for reproducible epoch ordering across PyTorch versions
 def _seed_worker(worker_id):
     s = SEED + worker_id
     np.random.seed(s)
@@ -3536,8 +3119,6 @@ def _seed_worker(worker_id):
 g = torch.Generator()
 g.manual_seed(SEED)
 
-# only the training dataset augments (phase rotation + AWGN); val/test see
-# the clean channel
 train_ds = MultimodalGPSDataset(indices=train_idx, augment=True,
                                 aug_phase=AUG_PHASE, aug_noise_p=AUG_NOISE_P,
                                 aug_snr_db=AUG_SNR_DB, **ds_kw)
@@ -3551,9 +3132,6 @@ test_loader  = DataLoader(test_ds,  BATCH_SIZE, shuffle=False, **dl_kw)
 
 print(f"Loaders -> Train {len(train_loader)} | Val {len(val_loader)} | Test {len(test_loader)}")
 
-# sanity: the scaled target should have an RMS norm of order 1 -- a wildly
-# different value means OFF_MEAN/OFF_SCALE were computed on a different
-# sample set than the one being trained on
 _probe_n = min(2048, len(train_ds))
 _probe = np.stack([train_ds[i][0].numpy() for i in range(0, _probe_n,
                                                         max(1, _probe_n // 256))])
@@ -3562,13 +3140,7 @@ print(f"  Target check -> per-axis std {np.round(_probe.std(0), 4).tolist()} | "
       f"(1 unit = {OFF_SCALE:.2f} m)")
 
 
-# ---------------------------------------------------------------------------
-# Model, optimizer (parameter groups), scheduler
-# ---------------------------------------------------------------------------
 if IS_LATE_FUSION:
-    # two-stage path: load the two already-trained single-modality models,
-    # freeze them, train only CADPool on top -- just a different way of
-    # combining them, nothing upstream changes.
     print("=" * 60)
     print("LATE FUSION (v16) -- loading frozen single-modality experts")
     print("=" * 60)
@@ -3583,9 +3155,6 @@ if IS_LATE_FUSION:
         mod_drop_p=LATE_MOD_DROP_P, gate_clamp=LATE_GATE_CLAMP,
         corr_scale=LATE_CORR_SCALE,
     ).to(DEVICE)
-    # physics-anchor and aux-modality losses both supervise encoder weights;
-    # encoders are frozen here, so those terms would just add a constant
-    # with no gradient -- switched off so loss curves stay comparable.
     LAMBDA_ANCHOR_EFF   = 0.0
     AUX_LOSS_MODALITIES = []
 else:
@@ -3648,10 +3217,6 @@ if IS_LATE_FUSION:
           f"| corr scale {LATE_CORR_SCALE}")
 print("=" * 60)
 
-# bin grid handed to the criterion so DFL and the model share one bin-centre
-# definition. LAMBDA_ANCHOR_EFF is 0 under late fusion, since the anchor
-# supervises the now-frozen CSI encoder and would otherwise just add a
-# constant to the loss.
 _bin_centers = model.bin_centers.detach().cpu() if USE_DIST_HEAD else None
 criterion = DFRLoss(beta=LOSS_BETA_START, lambda_dist=LAMBDA_DIST,
                     lambda_dfl=LAMBDA_DFL if USE_DIST_HEAD else 0.0,
@@ -3682,10 +3247,6 @@ else:
     print(f"RUN_MODE = 'eval_only' -- skipping optimizer/scheduler setup")
 
 
-# ---------------------------------------------------------------------------
-# FLOPs and parameter counting (best effort)
-# ---------------------------------------------------------------------------
-# Uses fvcore if available, otherwise just reports parameter counts.
 def _make_dummy_features(device):
     feats = {}
     if USE_CSI:
@@ -3718,12 +3279,7 @@ except Exception as e:
 print(f"  Total params      : {total_params:,}")
 print(f"  Trainable params  : {train_params:,}")
 
-# per-branch parameter accounting -- the CSI dense readout is the most
-# useful number here, since it's the primary load-bearing path
 if USE_CSI:
-    # under late fusion the CSI encoder is inside the frozen expert, so
-    # reach through model.csi_model; reported for continuity with the
-    # feature-fusion runs but not trained in this mode
     _csi_enc = model.csi_model.csi_encoder if IS_LATE_FUSION else model.csi_encoder
     dense_readout = sum(p.numel() for p in _csi_enc.dense.parameters())
     token_readout = (sum(p.numel() for p in _csi_enc.proj.parameters())
@@ -3733,17 +3289,6 @@ if USE_CSI:
     print(f"  CSI token readout : {token_readout:,}")
 
 
-# ---------------------------------------------------------------------------
-# Training loop with early stopping
-# ---------------------------------------------------------------------------
-# saves only best_model.pth/final_model.pth. validation and checkpointing
-# use EMA weights (raw SGD keeps training underneath), so best_model.pth's
-# 'model_state_dict' is the EMA weights -- Cell 15 loads them directly.
-#
-#   * SmoothL1 beta is logged each epoch so the loss column stays
-#     comparable within a run.
-#   * checkpoint records OFF_SCALE/AXIS_SCALE/full config, so a saved run
-#     is self-describing and reloadable without the Cache directory.
 best_model_path  = OUTPUT_DIR / "best_model.pth"
 final_model_path = OUTPUT_DIR / "final_model.pth"
 history_json     = OUTPUT_DIR / "training_history.json"
@@ -3756,7 +3301,6 @@ def _checkpoint_payload(epoch, val_loss, val_err):
         'val_loss': val_loss,
         'val_mean_error_m': val_err,
         'arch_tag': ARCH_TAG,
-        # normalization (everything needed to denormalize a prediction)
         'gps_mean': GPS_MEAN.tolist(), 'gps_std': GPS_STD.tolist(),
         'gps_min':  GPS_MIN.tolist(),  'gps_max': GPS_MAX.tolist(),
         'off_mean': OFF_MEAN.tolist(), 'off_std': OFF_STD.tolist(),
@@ -3764,7 +3308,6 @@ def _checkpoint_payload(epoch, val_loss, val_err):
         'csi_std':  float(CSI_STD), 'csi_feat_ch': int(CSI_FEAT_CH),
         'logmag_mean': float(LOGMAG_MEAN), 'logmag_std': float(LOGMAG_STD),
         'fftlog_mean': float(FFTLOG_MEAN), 'fftlog_std': float(FFTLOG_STD),
-        # architecture (needed to re-instantiate)
         'csi_embed_dim': CSI_EMBED_DIM, 'pos_embed_dim': POS_EMBED_DIM,
         'cam_embed_dim': CAM_EMBED_DIM, 'lidar_embed_dim': LIDAR_EMBED_DIM,
         'fusion_dim': FUSION_DIM, 'csi_width': CSI_WIDTH, 'csi_blocks': CSI_BLOCKS,
@@ -3775,9 +3318,6 @@ def _checkpoint_payload(epoch, val_loss, val_err):
         'lambda_dist': LAMBDA_DIST, 'lambda_dfl': LAMBDA_DFL,
         'lambda_anchor': LAMBDA_ANCHOR_EFF, 'mod_drop_p': MOD_DROP_P,
         'fusion_mode': FUSION_MODE, 'is_late_fusion': bool(IS_LATE_FUSION),
-        # records the CSI config the encoder was built for, so a future
-        # load can check it and fail with a clear message instead of a raw
-        # shape mismatch. absent on older checkpoints -- treat as unknown.
         'num_ant': int(NUM_ANT), 'num_sub': int(NUM_SUB),
         'ant_shape': [int(ANT_ROWS), int(ANT_COLS)], 'out_dim': int(OUT_DIM),
     }
@@ -3797,31 +3337,17 @@ if RUN_MODE == 'train_and_eval':
         'train_loss': [], 'val_loss': [],
         'val_mean_error_m': [],            # in metres (EMA weights)
         'lr': [], 'beta': [],
-        # per-epoch trend of the attention-refinement branch, so "dead or
-        # just slow" shows up in curves.png instead of one final number.
-        # feature-fusion/single-modality only (GPSLocalizer-specific).
         'refine_scale_absmean': [],
-        # late-fusion analogue: CADPool's last layer is also zero-init, so
-        # its weight magnitude answers the same question when there's no
-        # attention-refinement branch to read.
         'pool_gain_absmean': [],
         'gate_mean': {m: [] for m in
                      (['csi'] if USE_CSI else []) +
                      (['cam'] if USE_CAMERA else []) +
                      (['lidar'] if USE_LIDAR else []) +
-                     # history['gate_mean'] has a fixed pre-allocated key set;
-                     # anything a model returns outside it gets silently
-                     # dropped. CADPool emits 'conflict'/'prec_csi' instead of
-                     # the GMU gate keys, so branch on IS_LATE_FUSION here.
                      ((['csi_confidence', 'cam_confidence']
                        if (USE_CSI and USE_CAMERA and not IS_LATE_FUSION) else [])
                       + (['conflict', 'prec_csi'] if IS_LATE_FUSION else []))},
-        # auxiliary modality-competition loss trend (see AUX_LOSS_*)
         'aux_loss': [],
     }
-    # resolved once here, not per-batch/per-epoch -- validates
-    # AUX_LOSS_MODALITIES against this model's actual enabled modalities and
-    # missing_emb availability, printing a clear reason for anything skipped
     _aux_targets = _resolve_aux_loss_targets(model, AUX_LOSS_MODALITIES)
 
     best_val_err      = float('inf')
@@ -3832,7 +3358,6 @@ if RUN_MODE == 'train_and_eval':
     for epoch in range(1, EPOCHS + 1):
         t0 = time.time()
 
-        # anneal the SmoothL1 transition point
         beta_now = beta_at_epoch(epoch, EPOCHS, LOSS_BETA_START, LOSS_BETA_END)
         criterion.set_beta(beta_now)
 
@@ -3840,7 +3365,6 @@ if RUN_MODE == 'train_and_eval':
             model, train_loader, optimizer, scaler, criterion, DEVICE, ema=ema,
             aux_targets=_aux_targets, aux_weight=AUX_LOSS_WEIGHT)
 
-        # validate the EMA weights (what would be deployed)
         ema.apply_to(model)
         val_loss, val_err, gate_means = evaluate_loss_and_error(
             model, val_loader, criterion, DEVICE)
@@ -3854,31 +3378,20 @@ if RUN_MODE == 'train_and_eval':
         history['lr'].append(lr_now)
         history['beta'].append(beta_now)
         history['aux_loss'].append(aux_loss_val if aux_loss_val is not None else float('nan'))
-        # refine_scale only exists on GPSLocalizer (LayerScale on the
-        # attention branch) -- not on LateFusionLocalizer, since CADPool is
-        # the combiner, not a branch. USE_ATTN_REFINE alone isn't enough
-        # since it stays True regardless of fusion mode.
         if USE_ATTN_REFINE and not IS_LATE_FUSION:
             history['refine_scale_absmean'].append(
                 float(model.refine_scale.detach().abs().mean()))
         if IS_LATE_FUSION:
             history['pool_gain_absmean'].append(
                 float(model.pool.net[-1].weight.detach().abs().mean()))
-        # gate_mean tracking must not be nested under USE_ATTN_REFINE --
-        # csi_confidence is a separate mechanism and would silently stop
-        # logging if attention refinement were off while it stayed on.
-        # runs whenever gate_mean has any keys at all.
         for m in history['gate_mean']:
             history['gate_mean'][m].append(gate_means.get(m, float('nan')))
 
         tag = ""
-        # best model = lowest mean Euclidean error on the validation set
         if val_err < best_val_err:
             best_val_err      = val_err
             best_epoch        = epoch
             epochs_no_improve = 0
-            # the EMA weights are currently loaded in `model`, so
-            # model.state_dict() below IS the EMA model
             ckpt = _checkpoint_payload(epoch, val_loss, val_err)
             ckpt['model_state_dict']     = model.state_dict()      # EMA weights
             ckpt['optimizer_state_dict'] = optimizer.state_dict()
@@ -3887,7 +3400,6 @@ if RUN_MODE == 'train_and_eval':
         else:
             epochs_no_improve += 1
 
-        # swap the raw training weights back and continue training
         ema.restore(model)
         scheduler.step()
 
@@ -3900,8 +3412,6 @@ if RUN_MODE == 'train_and_eval':
                  else "")
               + (f"  |pool_g| {history['pool_gain_absmean'][-1]:.4f}"
                  if IS_LATE_FUSION and history['pool_gain_absmean'] else "")
-              # gates[...] must not be nested under USE_ATTN_REFINE -- see
-              # the history['gate_mean'] note above
               + (f"  gates[{', '.join(f'{m}={history['gate_mean'][m][-1]:.2f}' for m in history['gate_mean'])}]"
                  if history['gate_mean'] else ""))
 
@@ -3910,7 +3420,6 @@ if RUN_MODE == 'train_and_eval':
             break
 
     total_time = time.time() - t_start
-    # final checkpoint = final EMA weights (+ raw weights for completeness)
     raw_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
     ema.apply_to(model)
     ckpt = _checkpoint_payload(epoch, val_loss, val_err)
@@ -3919,15 +3428,10 @@ if RUN_MODE == 'train_and_eval':
     torch.save(ckpt, final_model_path)
     ema.restore(model)
 
-    # how far did the model depart from its zero-init closed form? both
-    # mechanisms start at exactly 0 for the same reason -- reads whichever
-    # one this run actually has.
     if USE_ATTN_REFINE and not IS_LATE_FUSION:
         rs = model.refine_scale.detach().abs()
         print(f"\n  Attention LayerScale |gamma|: mean {rs.mean():.4f}  "
               f"max {rs.max():.4f}   (0.0 == model stayed at the dense trunk)")
-        # is it still climbing, or did it plateau? compare the first and
-        # last quarter of the recorded trend so this is answered directly
         rs_trend = history.get('refine_scale_absmean', [])
         if len(rs_trend) >= 8:
             q = max(1, len(rs_trend) // 4)
@@ -3952,9 +3456,6 @@ if RUN_MODE == 'train_and_eval':
             print(f"  |weight| trend: first-{q}-epoch mean {early:.4f} -> "
                   f"last-{q}-epoch mean {late:.4f}  ({direction})")
 
-    # gate-mean summary. used to be nested under USE_ATTN_REFINE and so
-    # never printed for late fusion, even though gate_mean is populated
-    # every epoch regardless of mode -- un-nested now.
     for m in history.get('gate_mean', {}):
         gm = history['gate_mean'][m]
         if gm:
@@ -3970,11 +3471,6 @@ else:
     print("RUN_MODE = 'eval_only' -- skipping training.")
 
 
-# ---------------------------------------------------------------------------
-# Persist training history
-# ---------------------------------------------------------------------------
-# adds the annealed beta as a column so the loss curve stays interpretable
-# as the objective's shape changes across training.
 if RUN_MODE == 'train_and_eval':
     with open(history_json, 'w') as f:
         json.dump(history, f, indent=2)
@@ -3987,9 +3483,6 @@ if RUN_MODE == 'train_and_eval':
             _cols += ",refine_scale_absmean"
         if _has_pool_g:
             _cols += ",pool_gain_absmean"
-        # gate columns must not be nested under _has_refine -- see the
-        # console-print/history-append notes above (csi_confidence is
-        # independent of attention refinement)
         _cols += "".join(f",gate_{m}" for m in _gate_mods)
         f.write(_cols + "\n")
         for i in range(len(history['train_loss'])):
@@ -4011,13 +3504,6 @@ else:
     print("Skipped (eval_only mode).")
 
 
-# ---------------------------------------------------------------------------
-# Test evaluation (loads best model)
-# ---------------------------------------------------------------------------
-# test-time phase-rotation TTA: prediction averaged over TTA_PHASE_K exact
-# rotations of the CSI (h -> e^{j theta} h is a label-invariant nuisance,
-# verified by Cell 6's self-check). validation/early-stopping stayed
-# single-pass, so no leakage. metrics use the same definitions as before.
 print("\n" + "=" * 72)
 print("TEST EVALUATION")
 print("=" * 72)
@@ -4029,17 +3515,12 @@ if not best_model_path.exists():
     )
 
 try:
-    # PyTorch >= 2.6 defaults weights_only=True, which rejects the plain
-    # Python scalars/lists this checkpoint also carries; older releases
-    # have no such keyword at all, hence the fallback
     ckpt = torch.load(best_model_path, map_location=DEVICE, weights_only=False)
 except TypeError:
     ckpt = torch.load(best_model_path, map_location=DEVICE)
-model.load_state_dict(ckpt['model_state_dict'])     # EMA weights (see Cell 13)
+model.load_state_dict(ckpt['model_state_dict'])     
 print(f"Loaded best model (epoch {ckpt['epoch']}, arch={ckpt.get('arch_tag', 'v1')})")
 
-# guard against evaluating a checkpoint trained under a different target
-# scaling -- silently mixing conventions would produce meaningless metres
 _ck_scale = ckpt.get('off_scale', None)
 if _ck_scale is not None and abs(float(_ck_scale) - float(OFF_SCALE)) > 1e-6:
     raise RuntimeError(
@@ -4051,11 +3532,9 @@ tta_k = TTA_PHASE_K if USE_CSI else 1
 if tta_k > 1:
     print(f"TTA: averaging over {tta_k} CSI phase rotations (exact, feature-space)")
 
-# run full eval -> per-sample predictions and ground truth
 test_pred_raw, test_gt_raw, test_pred_norm, test_gt_norm = evaluate_full(
     model, test_loader, DEVICE, tta_k=tta_k)
 
-# metrics in metres
 diffs_3d   = test_pred_raw - test_gt_raw           # (N, 3)
 err_3d     = np.linalg.norm(diffs_3d, axis=1)      # (N,)
 err_2d     = np.linalg.norm(diffs_3d[:, :2], axis=1)
@@ -4073,8 +3552,6 @@ p90_error_2d    = float(np.percentile(err_2d, 90))
 p95_error_2d    = float(np.percentile(err_2d, 95))
 rmse_2d         = float(np.sqrt((err_2d ** 2).mean()))
 
-# sub-metre / few-metre hit rates: the practically meaningful summary once
-# the mean approaches 1 m, more informative than the mean alone
 acc_1m  = float((err_3d <= 1.0).mean() * 100.0)
 acc_2m  = float((err_3d <= 2.0).mean() * 100.0)
 acc_5m  = float((err_3d <= 5.0).mean() * 100.0)
@@ -4098,13 +3575,6 @@ print(f"  <= 1 m : {acc_1m:.2f} %   <= 2 m : {acc_2m:.2f} %   <= 5 m : {acc_5m:.
 print("=" * 72)
 
 
-# ---------------------------------------------------------------------------
-# Test-time modality ablation (diagnostic only, see TEST_TIME_ABLATE)
-# ---------------------------------------------------------------------------
-# runs a second evaluate_full() on the same loaded weights, with one
-# modality forced to "missing" on every test sample. answers "does the
-# trained fusion model actually use this modality," a different question
-# than a separately-trained single-modality baseline.
 ablation_result = None
 if TEST_TIME_ABLATE is not None:
     _abl_enabled = {'csi': USE_CSI, 'cam': USE_CAMERA, 'lidar': USE_LIDAR}
@@ -4119,10 +3589,6 @@ if TEST_TIME_ABLATE is not None:
               f"'this sensor is absent' representation to substitute. Retrain with "
               f"MOD_DROP_P['{TEST_TIME_ABLATE}'] > 0 first if you want this ablation.")
     elif len(model.mod_names) <= 1:
-        # GPSLocalizer.forward()'s len(dense)>1 guard silently skips
-        # substituting the only enabled modality -- checked here up front so
-        # this gets reported honestly instead of running an "ablation" that
-        # never actually removed anything.
         print(f"\n[--] TEST_TIME_ABLATE='{TEST_TIME_ABLATE}' skipped: this checkpoint "
               f"has only ONE modality enabled ({model.mod_names}). "
               f"GPSLocalizer.forward() refuses to force-drop a model's sole input "
@@ -4135,9 +3601,6 @@ if TEST_TIME_ABLATE is not None:
         print(f"TEST-TIME ABLATION: '{TEST_TIME_ABLATE}' forced absent "
               f"(same weights, same {len(test_ds)} test samples)")
         print("=" * 72)
-        # tta_k must be identical between the full-fusion and ablated
-        # evaluations (matched here via abl_tta_k = tta_k), or the
-        # comparison would silently measure "no TTA" instead of "no CSI"
         abl_tta_k = tta_k
         abl_pred_raw, abl_gt_raw, _, _ = evaluate_full(
             model, test_loader, DEVICE, tta_k=abl_tta_k,
@@ -4193,11 +3656,6 @@ if TEST_TIME_ABLATE is not None:
         print(f"[OK] saved -> {abl_path}")
 
 
-# ---------------------------------------------------------------------------
-# Save everything (.mat for MATLAB, .txt for analysis, .json for code)
-# ---------------------------------------------------------------------------
-# test_pred_norm/test_gt_norm are isotropic offsets (x off_scale for metres).
-# reload history in eval_only mode so it can still be saved to .mat.
 if RUN_MODE == 'eval_only' and history_json.exists():
     with open(history_json) as f:
         history = json.load(f)
@@ -4210,18 +3668,13 @@ if USE_BS_POS: mod_list.append("BS-pos")
 if USE_CAMERA: mod_list.append(f"Camera({NUM_CAMERAS if USE_ALL_CAMERAS else 1})")
 if USE_LIDAR:  mod_list.append("LiDAR")
 
-# (a) results.mat -- for MATLAB
 mat_dict = {
-    # predictions / ground truth (test set)
     'test_pred_raw':  test_pred_raw.astype(np.float64),
     'test_gt_raw':    test_gt_raw.astype(np.float64),
-    # ('norm' arrays are isotropically-scaled BS-relative offsets)
     'test_pred_norm': test_pred_norm.astype(np.float64),
     'test_gt_norm':   test_gt_norm.astype(np.float64),
     'test_err_3d':    err_3d.astype(np.float64),
     'test_err_2d':    err_2d.astype(np.float64),
-
-    # scalar metrics
     'mean_error_3d':   mean_error_3d,
     'median_error_3d': median_error_3d,
     'rmse_3d':         rmse_3d,
@@ -4237,25 +3690,21 @@ mat_dict = {
     'acc_within_2m':   acc_2m,
     'acc_within_5m':   acc_5m,
 
-    # training history
     'train_loss':       np.asarray(history.get('train_loss', []), dtype=np.float64),
     'val_loss':         np.asarray(history.get('val_loss',   []), dtype=np.float64),
     'val_mean_error_m': np.asarray(history.get('val_mean_error_m', []), dtype=np.float64),
     'lr_history':       np.asarray(history.get('lr', []), dtype=np.float64),
     'beta_history':     np.asarray(history.get('beta', []), dtype=np.float64),
 
-    # model / configuration scalars
     'num_params':       float(train_params),
     'num_total_params': float(total_params),
     'flops':            float(model_flops) if model_flops is not None else float('nan'),
 
-    # GPS normalization
     'gps_mean': GPS_MEAN.astype(np.float64),
     'gps_std':  GPS_STD.astype(np.float64),
     'gps_min':  GPS_MIN.astype(np.float64),
     'gps_max':  GPS_MAX.astype(np.float64),
 
-    # offset-target + CSI-scaling statistics
     'off_mean':         OFF_MEAN.astype(np.float64),
     'off_std':          OFF_STD.astype(np.float64),
     'off_scale':        float(OFF_SCALE),          # scalar target scale
@@ -4267,7 +3716,6 @@ mat_dict = {
     'fftlog_mean':      float(FFTLOG_MEAN),
     'fftlog_std':       float(FFTLOG_STD),
 
-    # reproducibility
     'seed':            int(SEED),
     'num_train':       int(len(train_idx)),
     'num_val':         int(len(val_idx)),
@@ -4275,7 +3723,6 @@ mat_dict = {
     'num_samples':         int(num_samples),
     'num_clean_samples':   int(len(CLEAN_INDICES)),
 
-    # hyperparameters
     'batch_size':       int(BATCH_SIZE),
     'epochs':           int(EPOCHS),
     'lr':               float(LR),
@@ -4283,7 +3730,6 @@ mat_dict = {
     'patience':         int(PATIENCE),
     'warmup_epochs':    int(WARMUP_EPOCHS),
     'min_lr':           float(MIN_LR),
-    # architecture scalars
     'csi_embed_dim':     int(CSI_EMBED_DIM),
     'pos_embed_dim':     int(POS_EMBED_DIM),
     'cam_embed_dim':     int(CAM_EMBED_DIM),
@@ -4312,19 +3758,11 @@ mat_dict = {
     'is_late_fusion':   int(IS_LATE_FUSION),
     'mod_drop_p':       (float(np.mean(list(MOD_DROP_P.values())))
                         if isinstance(MOD_DROP_P, dict) else float(MOD_DROP_P)),
-                       # MATLAB has no dict type; .mat stores the mean drop
-                       # rate across modalities -- the full per-modality
-                       # dict is in results.json if the exact values matter
     'aux_loss_weight':  float(AUX_LOSS_WEIGHT),
     'aux_loss_n_modalities': int(len(AUX_LOSS_MODALITIES)),
-                       # the actual modality names are in results.json's
-                       # 'aux_loss_modalities' key (MATLAB has no
-                       # list-of-strings-as-scalar)
     'tta_phase_k':      int(tta_k),
     'ema_decay':        float(EMA_DECAY),
     'aug_noise_p':      float(AUG_NOISE_P),
-
-    # strings (saved as character arrays in MATLAB)
     'experiment_name':  EXPERIMENT_NAME,
     'scenario_name':    SCENARIO_NAME,
     'run_mode':         RUN_MODE,
@@ -4351,8 +3789,6 @@ mat_path = OUTPUT_DIR / "results.mat"
 sio.savemat(mat_path, mat_dict, do_compression=True)
 print(f"[OK] MATLAB-friendly  -> {mat_path}")
 
-
-# (b) results.json -- for code
 results_json_dict = {
     'experiment':  EXPERIMENT_NAME,
     'run_mode':    RUN_MODE,
@@ -4450,7 +3886,6 @@ with open(OUTPUT_DIR / "results.json", 'w') as f:
 print(f"[OK] JSON results     -> {OUTPUT_DIR}/results.json")
 
 
-# (c) results.txt -- human-readable summary
 txt_lines = []
 def _w(s=""): txt_lines.append(s)
 
@@ -4619,8 +4054,6 @@ if len(history.get('train_loss', [])) > 0:
         _hdr += ", |gamma|"
     if _has_pool_g:
         _hdr += ", |pool_g|"
-    # gate columns must not be nested under _has_refine -- csi_confidence is
-    # independent of attention refinement (see history-append/print notes)
     _hdr += "".join(f", gate[{m}]" for m in _gate_mods)
     _w(f"  Showing last {nshow} epochs ({_hdr}):")
     start = len(history['train_loss']) - nshow
@@ -4661,17 +4094,10 @@ with open(OUTPUT_DIR / "results.txt", 'w') as f:
 print(f"[OK] Human-readable   -> {OUTPUT_DIR}/results.txt")
 
 
-# ---------------------------------------------------------------------------
-# Figures -- training curves + error CDF
-# ---------------------------------------------------------------------------
-# LR panel overlays the annealed SmoothL1 beta on a twin axis, since the
-# loss curve only makes sense next to the schedule that produced it.
 if len(history.get('train_loss', [])) > 0:
     _has_refine = len(history.get('refine_scale_absmean', [])) > 0
     _has_pool_g = len(history.get('pool_gain_absmean', [])) > 0
     _has_gates = any(len(v) > 0 for v in history.get('gate_mean', {}).values())
-    # n_panels must not depend on _has_refine alone -- csi_confidence
-    # (independent of attention refinement) also needs the 4th panel
     n_panels = 4 if (_has_refine or _has_pool_g or _has_gates) else 3
     fig, axes = plt.subplots(1, n_panels, figsize=(16 if n_panels == 3 else 21, 4.5))
     ep = range(1, len(history['train_loss']) + 1)
@@ -4703,10 +4129,6 @@ if len(history.get('train_loss', [])) > 0:
         ax2.set_ylabel('SmoothL1 beta', color='purple')
         ax2.tick_params(axis='y', labelcolor='purple')
 
-    # is the attention/gating/pooling branch dead or just slow? plotted
-    # directly instead of inferring it from one final number. each series
-    # gated independently (_has_refine/_has_pool_g/_has_gates) since any
-    # subset can be active and still needs to show up.
     if _has_refine or _has_pool_g or _has_gates:
         if _has_refine:
             axes[3].plot(ep, history['refine_scale_absmean'], color='teal',
@@ -4721,9 +4143,6 @@ if len(history.get('train_loss', [])) > 0:
         axes[3].grid(True, alpha=0.3)
         gate_colors = {'csi': 'crimson', 'cam': 'steelblue', 'lidar': 'darkorange',
                        'csi_confidence': 'darkviolet', 'cam_confidence': 'goldenrod',
-                       # CADPool diagnostics -- distinct from the plain
-                       # csi/cam keys above (CADPool's normalized share) so
-                       # all four stay legible on one panel.
                        'conflict': 'black', 'prec_csi': 'seagreen'}
         gm_dict = history.get('gate_mean', {})
         if _has_gates:
@@ -4748,7 +4167,6 @@ if len(history.get('train_loss', [])) > 0:
     plt.close(fig)
     print(f"[OK] Training curves -> {OUTPUT_DIR}/curves.{{png,pdf}}")
 
-# error CDF (3D and 2D)
 fig, ax = plt.subplots(1, 1, figsize=(6, 4.5))
 sorted_3d = np.sort(err_3d)
 sorted_2d = np.sort(err_2d)
