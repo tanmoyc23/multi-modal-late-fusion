@@ -4,7 +4,7 @@ Both scripts here tackle the same basic problem: figure out where a UE
 (user device) is, using wireless channel data from DeepVerse-simulated
 6G scenarios, sometimes with a camera or LiDAR thrown in. They're
 separate, self-contained pipelines, not two halves of one system —
-`FC_AE_GPR_Baseline_v5.py` is the lightweight "classical" baseline, and
+`FC_AE_GPR_Reproduced.py` is the lightweight "classical" baseline, and
 `Multi_Modal_Baseline_v24_embed_fusion.py` is the full deep-learning
 multimodal model. Run either one on its own.
 
