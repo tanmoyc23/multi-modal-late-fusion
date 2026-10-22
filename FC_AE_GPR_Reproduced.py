@@ -13,7 +13,7 @@ import h5py
 
 try:
     from tqdm import tqdm
-except ImportError:                      # no tqdm, fall back to plain prints
+except ImportError:
     def tqdm(it, **kw):
         desc = kw.get('desc', '')
         total = kw.get('total', None)
@@ -74,10 +74,6 @@ NUM_LIDARS_PER_BS  = _cfg['lidars_per_bs']
 SCENARIO_PATH = str(PROJECT_ROOT / "scenarios" / SCENARIO_FOLDER)
 CONFIG_PATH   = f"{SCENARIO_PATH}/param/config1.m"
 
-# config.m is never written to -- antenna shape/subcarrier selection are
-# overridden in memory (_init_deepverse), so other projects sharing it are
-# unaffected.
-#
 # DT31 ships with only [0:7] of 512 subcarriers selected -- too coarse for
 # ranging. spreading ADP_NC bins across the full band instead matches the
 # paper's OFDM grid spacing.
@@ -94,7 +90,7 @@ REUSE_V6_VALID_SAMPLES = True    # read-only reuse of v6's valid_samples.json
 
 # --- ADP geometry / antenna array ---
 # ADP = |V^H H F|, shape (n_bs_antennas, n_subcarriers). presets mirror paper
-# Table II/VIII (Nt=Nc = 4/8/16/32/64). ULA only -- a UPA breaks the 1-D DFT
+# Table II/VIII (Nt=Nc = 4/8/16/32/64). ULA only
 # angle axis.
 ADP_PRESET = 'paper16'
 
@@ -104,7 +100,7 @@ _ADP_PRESETS = {
     'paper16': dict(adp_nt=16, adp_nc=16, ant_shape=(16, 1)),
     'paper32': dict(adp_nt=32, adp_nc=32, ant_shape=(32, 1)),
     'paper64': dict(adp_nt=64, adp_nc=64, ant_shape=(64, 1)),
-    'native':  dict(adp_nt=16, adp_nc=8,  ant_shape=(16, 1)),   # not a paper config, sanity only
+    'native':  dict(adp_nt=16, adp_nc=8,  ant_shape=(16, 1)),
 }
 assert ADP_PRESET in _ADP_PRESETS, f"ADP_PRESET must be one of {list(_ADP_PRESETS)}"
 _p = _ADP_PRESETS[ADP_PRESET]
@@ -125,8 +121,6 @@ assert NUM_SUB <= OFDM_TOTAL_SUBCARRIERS, (
     f"Need {NUM_SUB} subcarriers but the scenario's OFDM grid has only "
     f"{OFDM_TOTAL_SUBCARRIERS}. Check dv.comm.OFDM.subcarriers in the config.")
 
-# which rows the paper actually reports: FC-AE-GPR skipped at 4x4 (nothing to
-# compress), raw GPR skipped above 16x16 (cost blows up)
 RAW_GPR_MAX_DIM = 256
 RUN_FCAE        = (ADP_NT * ADP_NC) > 16
 RUN_RAW_GPR     = (ADP_NT * ADP_NC) <= RAW_GPR_MAX_DIM
@@ -146,8 +140,6 @@ assert max(SELECTED_SUBCARRIERS) < OFDM_TOTAL_SUBCARRIERS, (
     f"Subcarrier index {max(SELECTED_SUBCARRIERS)} exceeds the "
     f"{OFDM_TOTAL_SUBCARRIERS}-point OFDM grid. Lower SUBCARRIER_STRIDE.")
 
-# delay-domain sanity: short unambiguous range aliases and weakens the
-# smooth-similarity assumption GPR/correlation rely on -- just a warning
 _C = 299_792_458.0
 _spacing_hz = _stride * (OFDM_BANDWIDTH_HZ / OFDM_TOTAL_SUBCARRIERS)
 _span_hz    = (NUM_SUB - 1) * _spacing_hz
@@ -156,7 +148,7 @@ UNAMBIG_M     = (_C / _spacing_hz) if _spacing_hz > 0 else float('inf')
 
 # --- protocol, matches authors' GPR_train_kfold.m / GPR_test_kfold.m ---
 PERCENT_ALL   = [10, 5, 1, 0.5, 0.25, 0.1]
-N_FOLDS       = 5        # authors use 50; 5 is a sane budget here, report what you ran
+N_FOLDS       = 5
 TEST_FRACTION = 0.10
 TEST_SIZE     = 1001
 
@@ -166,24 +158,23 @@ AUG_PERCENT   = 0.005
 # on DT31 (7,012 samples) -- not enough diversity. AUG_N_SOURCE pins the
 # absolute count instead so it matches what the paper actually used.
 AUG_N_SOURCE  = 362
-AUG_MAX_SAMPLES = 60000  # cap on augmented samples, random subsample keeps source diversity
-FCAE_EPOCHS   = 500      # paper text says 1000, released notebook uses 500 -- code wins
+AUG_MAX_SAMPLES = 60000  
+FCAE_EPOCHS   = 500      
 FCAE_BATCH    = 32
 FCAE_LR       = 5e-4
 FCAE_VAL_SPLIT= 0.2
-LEAKY_SLOPE   = 0.3      # Keras LeakyReLU default alpha, not PyTorch's 0.01
+LEAKY_SLOPE   = 0.3      
 
 # --- GPR, matches authors' GPR_train_kfold.m ---
-GPR_LENGTH_SCALE = 0.01  # MATLAB 'KernelParameters',[0.01, 25] -> sigmaL
-GPR_SIGMA_F      = 25.0  #                                     -> sigmaF
-GPR_SIGMA_N      = 0.5   # MATLAB 'Sigma',0.5 -> observation noise std
-GPR_MEDIAN_HEURISTIC = True   # rescale the init length scale to our own ADP scale, see _median_lengthscale
+GPR_LENGTH_SCALE = 0.01  
+GPR_SIGMA_F      = 25.0  #
+GPR_SIGMA_N      = 0.5   
+GPR_MEDIAN_HEURISTIC = True   
 GPR_RESTARTS         = 2
-GPR_LS_BOUND_FACTOR  = 100.0  # keeps l away from the degenerate l->0 optimum
+GPR_LS_BOUND_FACTOR  = 100.0  
 
 # --- training set sizes ---
-# DT31 has 7,012 samples vs the paper's ~72,400 -- same percentage is a very
-# different absolute count. 'absolute' mode below is the apples-to-apples axis.
+
 TRAIN_SIZE_MODE = 'percent'
 TRAIN_SIZES_ABS = [3620, 724, 362, 181, 72]
 
@@ -196,13 +187,9 @@ CNN_PATIENCE  = 50
 RANDOM_SEED   = 42
 
 # --- ADP scaling ---
-# DeepVerse channel gains are ~1e-7, so raw ADP values are too -- MSE loss
-# ~1e-14, Adam's eps dominates and the autoencoder just learns zero. rescale
-# by one global scalar instead, fit on the unlabeled FC-AE slice only.
-ADP_SCALE_MODE = 'std'      # 'std' (recommended) | 'max' | 'none'
 
-# CNN regresses absolute coordinates in metres; DT31 coords are large and
-# offset from zero, so targets are standardized for training.
+ADP_SCALE_MODE = 'std'     
+
 CNN_NORMALIZE_TARGETS = True
 
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -210,10 +197,7 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 _SC = SCENARIO_FOLDER.lower().replace('-', '_')
 SUB_TAG = f"sub{NUM_SUB}{'s' if SUBCARRIER_MODE == 'spread' else 'c'}"
 
-# every file this script writes starts with "fcaegpr_" so it can never
-# collide with v6's caches. tag carries both antenna shape and subcarrier
-# count/mode (v6's filename only carries antenna shape, which is how it ends
-# up accepting a mismatched subcarrier cache).
+
 OWN_PREFIX         = f"fcaegpr_{_SC}_{ANT_TAG}_{SUB_TAG}"
 CSI_H5_FILE        = CACHE_DIR / f"{OWN_PREFIX}_csi.h5"
 OWN_SAMPLES_FILE   = CACHE_DIR / f"fcaegpr_{_SC}_valid_samples.json"
@@ -260,9 +244,7 @@ EXP_NAME = get_experiment_name()
 print(f"[OK] Experiment: {EXP_NAME}")
 
 
-# ---------------------------------------------------------------------------
-# DeepVerse CSI cache builder -- own fcaegpr_* files only, never touches
-# config.m or any v6 file.
+
 # ---------------------------------------------------------------------------
 def _set_nested(params, path_options, value, what):
     """Try each candidate key path in turn, set the first one that exists.
@@ -319,8 +301,7 @@ def _init_deepverse():
     pm.params["radar"]["enable"] = False
     pm.params["comm"]["enable"]  = True
     pm.params["position"]        = True
-    # camera/lidar left on, same as v6 -- unused here but that's the config
-    # proven to build dv.Dataset for these scenarios without tripping anything
+    
     pm.params["camera"]          = True
     pm.params["lidar"]           = True
     pm.params["camera_id"] = [
@@ -542,10 +523,7 @@ def load_deepverse_cache():
 
 
 # ---------------------------------------------------------------------------
-# CSI -> ADP   (authors' CSI2ADP_theta, paper Eqs. 2-4)
-#   V[z,q] = (1/sqrt(Nt)) exp(-j 2 pi z (q - Nt/2) / Nt)
-#   F[z,q] = (1/sqrt(Nc)) exp(-j 2 pi z q / Nc)
-#   A      = |V^H H F|
+
 # ---------------------------------------------------------------------------
 def dft_matrix_V(nt: int) -> np.ndarray:
     z = np.arange(nt).reshape(nt, 1)
@@ -566,12 +544,8 @@ def csi_to_adp(csi: np.ndarray, adp_nt: int, adp_nc: int) -> np.ndarray:
     Vh = V.conj().T
 
     H = (csi[:, 0] + 1j * csi[:, 1]).astype(np.complex128)   # (N, n_ant, n_sub)
-    # take the first adp_nt elements -- a valid smaller ULA sub-aperture
     H = H[:, :adp_nt, :adp_nc]
     A = np.abs(np.einsum('ij,njk,kl->nil', Vh, H, F))
-    # both axes come out mirrored vs the physical parameter since F in
-    # Eq (3) is unconjugated -- fixed bijection applied to every sample,
-    # so it only relabels Fig. 1's axes, no effect on fingerprinting
     return A.astype(np.float32)
 
 
@@ -594,8 +568,6 @@ def build_or_load_adp(csi, loc):
 
 
 # ---------------------------------------------------------------------------
-# Augmentation for FC-AE training (authors' Data_Augmentation.m)
-# circshift grid (step = side/8) x {id, rot90, rot-90, rot180, flipud, fliplr}
 # ---------------------------------------------------------------------------
 def augment_adp(adp_train: np.ndarray, max_samples: int = None,
                 seed: int = RANDOM_SEED) -> np.ndarray:
@@ -662,7 +634,7 @@ FCAE_LAYERS = {
     (16, 16): [144, 64, 16],
     (8, 8):   [36, 16],
     (4, 4):   [16],
-    (16, 8):  [72, 36, 16],   # 'native' preset, interpolated widths, not an authors' config
+    (16, 8):  [72, 36, 16],   
 }
 ENCODED_DIM = 16
 
@@ -815,9 +787,7 @@ def _median_lengthscale(X, max_n=400, seed=RANDOM_SEED):
 
 def make_gpr(length_scale=None):
     ls = GPR_LENGTH_SCALE if length_scale is None else length_scale
-    # bound l relative to the data's own scale -- with n_train << input dim,
-    # l->0 (K->I, pure noise) is a genuine likelihood maximizer, so clamp it
-    # away from zero per the paper's own "similarity decays smoothly" assumption
+   
     lo, hi = ls / GPR_LS_BOUND_FACTOR, ls * GPR_LS_BOUND_FACTOR
     kernel = (ConstantKernel(GPR_SIGMA_F ** 2, (1e-3, 1e12))
               * Matern(length_scale=ls, length_scale_bounds=(lo, hi), nu=1.5)
@@ -838,8 +808,6 @@ def run_gpr(train_X, train_Y, test_X, tag=''):
         preds.append(g.predict(test_X))
     pred = np.stack(preds, axis=1)
 
-    # a GP that collapsed to its prior mean emits an ~constant vector but
-    # still reports a plausible-looking RMSE, so flag it explicitly
     spread = float(np.std(pred, axis=0).mean())
     tgt_spread = float(np.std(train_Y, axis=0).mean())
     if tgt_spread > 0 and spread < 1e-3 * tgt_spread:
@@ -850,9 +818,7 @@ def run_gpr(train_X, train_Y, test_X, tag=''):
 
 
 # ---------------------------------------------------------------------------
-# CNN fingerprinting benchmark (authors' CNN_Localization.ipynb)
-# Keras 'same' padding is asymmetric for even kernels; nn.Conv2d can't
-# express that directly so it's padded explicitly below.
+
 # ---------------------------------------------------------------------------
 class SamePad2d(nn.Module):
     def __init__(self, k):
@@ -870,9 +836,6 @@ def _conv_block(cin, cout, k, bn=True):
     if bn:
         layers.append(nn.BatchNorm2d(cout))
     return layers
-
-
-# (out_channels, kernel, batchnorm, maxpool_after) per ADP side, from the notebook
 CNN_SPECS = {
     4:  [(32, 5, True, True), (64, 3, True, True)],
     8:  [(16, 7, True, True), (32, 5, True, False), (32, 5, True, True),
@@ -897,8 +860,7 @@ class ADPCnn(nn.Module):
             blocks += _conv_block(cin, cout, k, bn)
             cin = cout
             if pool:
-                # only pool axes still > 1 -- a no-op for square paper configs,
-                # matters for non-square ADPs where an axis can hit 1 early
+               
                 ph = 2 if h > 1 else 1
                 pw = 2 if w > 1 else 1
                 if ph > 1 or pw > 1:
@@ -912,7 +874,6 @@ class ADPCnn(nn.Module):
 
 
 def train_cnn(train_adp, train_loc, epochs=CNN_EPOCHS, verbose_every=200):
-    """MAE loss + Adam, matches the notebook, keeps the best-val_loss checkpoint."""
     n, nt, nc = train_adp.shape
     X = torch.from_numpy(train_adp[:, None].astype(np.float32))
     Yraw = np.asarray(train_loc, dtype=np.float64)
@@ -975,11 +936,7 @@ def predict_cnn(model, adp, batch=512):
     return pred * getattr(model, '_y_std', 1.0) + getattr(model, '_y_mean', 0.0)
 
 
-# ---------------------------------------------------------------------------
-# Normalized-correlation grid search (authors' correlation_based_localization.m,
-# paper Eq. 17) -- cosine similarity of vectorized ADPs, one matrix product
-# instead of the .m file's per-sample loop. Fixes two bugs in the released .m
-# (self-referential loop var, '#' used as a MATLAB comment char).
+
 # ---------------------------------------------------------------------------
 def correlation_predict(train_adp, train_loc, test_adp, block=512):
     Tr = train_adp.reshape(len(train_adp), -1).astype(np.float64)
@@ -994,9 +951,6 @@ def correlation_predict(train_adp, train_loc, test_adp, block=512):
 
 # ---------------------------------------------------------------------------
 # k-fold evaluation
-# split arithmetic follows GPR_train_kfold.m + GPR_test_kfold.m. RMSE is
-# MATLAB immse convention: mean over all elements of the (n,2) residual then
-# sqrt -- not mean Euclidean distance, differs by ~sqrt(2) on isotropic error.
 # ---------------------------------------------------------------------------
 def rmse_immse(y_true, y_pred):
     return float(np.sqrt(np.mean((np.asarray(y_true) - np.asarray(y_pred)) ** 2)))
@@ -1026,7 +980,7 @@ def main():
     csi, loc = load_deepverse_cache()
     adp, loc = build_or_load_adp(csi, loc)
     del csi
-    loc2 = loc[:, :2]                       # paper localizes in (x, y)
+    loc2 = loc[:, :2]                       
     total = len(adp)
 
     # global ADP scale, estimated from the unlabeled slice only
