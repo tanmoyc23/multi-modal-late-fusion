@@ -16,7 +16,7 @@ else.
 
 ---
 
-## `FC_AE_GPR_Baseline_v5.py`
+## `FC_AE_GPR_Reproduced.py`
 
 This is a reimplementation of a published CSI-fingerprinting pipeline
 (the FC-AE-GPR paper), adapted to run on DeepVerse scenario data
@@ -69,7 +69,7 @@ presets, GPU helps once the CNN benchmark and larger GPR kernels kick in.
 
 ---
 
-## `Multi_Modal_Baseline_v24_embed_fusion.py`
+## `Multi_Modal_CADPoolFusion.py`
 
 This is the real model — a deep multimodal localization network that
 can take CSI, camera images, and LiDAR point clouds (any combination)
